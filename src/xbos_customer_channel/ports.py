@@ -5,6 +5,7 @@ from typing import Protocol, Sequence
 from .catalog import CatalogProjection, CommercialQuoteSnapshot, InteractionCart
 from .entry_context import EntryPurpose, EntryTokenRecord, MerchantContextProjection
 from .identity import ChannelIdentity, ConsentPurpose, ConsentRecord
+from .order import AuthoritativeOrderConfirmationSnapshot, CanonicalOrderProjection, OrderSubmitRequest, ServiceMode, ServiceModeProjection
 from .models import (
     EntryContext,
     MenuItem,
@@ -64,6 +65,32 @@ class XBOSCatalogPort(Protocol):
         cart: InteractionCart,
         now_epoch: int,
     ) -> CommercialQuoteSnapshot: ...
+
+
+class XBOSOrderPort(Protocol):
+    """Future-facing XBOS Restaurant order boundary; fake/typed only until IA0/F facade freezes."""
+
+    def resolve_service_context(
+        self,
+        *,
+        merchant_ref: str,
+        location_ref: str,
+        mode: ServiceMode,
+        table_ref: str | None,
+        contact_ref: str | None,
+        delivery_address_ref: str | None,
+    ) -> ServiceModeProjection: ...
+
+    def prepare_order_confirmation(
+        self,
+        *,
+        quote: CommercialQuoteSnapshot,
+        service_context: ServiceModeProjection,
+        now_epoch: int,
+    ) -> AuthoritativeOrderConfirmationSnapshot: ...
+
+    def submit_order(self, request: OrderSubmitRequest) -> CanonicalOrderProjection: ...
+    def get_order_by_client_ref(self, client_submit_ref: str) -> CanonicalOrderProjection | None: ...
 
 
 class CustomerSessionStorePort(Protocol):
