@@ -1,0 +1,19 @@
+# XC8 CONTROL ROOM PARENT
+
+Frozen parent:
+- XC7 HEAD `d863c85563e4105a96b182b3791d4cb1cc2bd456`
+- XC7 TAG `xbos-customer-channel-xc7-order-change-cancellation-fulfillment-20260829`
+- XC7 CONTRACT `XC7_ORDER_CHANGE_FULFILLMENT_CONTRACT_V1`
+
+Preserved:
+- `XC6_ORDER_DRAFT_CONFIRMATION_CONTRACT_V1`
+- `XC5_CONVERSATION_SESSION_STATE_CONTRACT_V1`
+- `XC4_CATALOG_QUOTE_CONTRACT_V1`
+- `XC3_ENTRY_CONTEXT_CONTRACT_V1`
+
+Formal authorization source:
+- `xafpay-program-xc7-accepted-xc8-authorized-20260829`
+
+Authorization:
+`XC8=AUTHORIZED`
+`XC9=NOT_AUTHORIZED`

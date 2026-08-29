@@ -6,6 +6,7 @@ from .catalog import CatalogProjection, CommercialQuoteSnapshot, InteractionCart
 from .entry_context import EntryPurpose, EntryTokenRecord, MerchantContextProjection
 from .identity import ChannelIdentity, ConsentPurpose, ConsentRecord
 from .order import AuthoritativeOrderConfirmationSnapshot, CanonicalOrderProjection, OrderSubmitRequest, ServiceMode, ServiceModeProjection
+from .payment_experience import CanonicalPaymentRequestProjection
 from .order_lifecycle import (
     CancellationDecision,
     CancellationRequest,
@@ -109,6 +110,17 @@ class XBOSOrderChangeFulfillmentPort(Protocol):
     def get_cancellation_projection(self, *, order_ref: str, correlation_ref: str) -> CancellationDecision | None: ...
     def get_fulfillment_projection(self, *, order_ref: str, correlation_ref: str) -> FulfillmentProjection | None: ...
     def reconcile_order_lifecycle(self, *, order_ref: str, correlation_ref: str) -> OrderLifecycleProjection: ...
+
+
+class XBOSPaymentRequestPort(Protocol):
+    """Typed XBOS payment-request projection boundary; real adapter blocked until IA0/F facade freezes."""
+
+    def get_payment_request(
+        self,
+        *,
+        order_ref: str,
+        correlation_ref: str,
+    ) -> CanonicalPaymentRequestProjection: ...
 
 
 class CustomerSessionStorePort(Protocol):
