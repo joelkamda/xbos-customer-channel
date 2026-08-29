@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Protocol, Sequence
 
+from .catalog import CatalogProjection, CommercialQuoteSnapshot, InteractionCart
 from .entry_context import EntryPurpose, EntryTokenRecord, MerchantContextProjection
 from .identity import ChannelIdentity, ConsentPurpose, ConsentRecord
 from .models import (
@@ -47,6 +48,21 @@ class EntryTokenStorePort(Protocol):
     def put(self, record: EntryTokenRecord) -> None: ...
     def get(self, token_ref: str) -> EntryTokenRecord | None: ...
     def mark_consumed(self, token_ref: str, consumed_at_epoch: int) -> EntryTokenRecord: ...
+
+
+class XBOSCatalogPort(Protocol):
+    """Future-facing XBOS SO1/R2 catalog + quote boundary; fake/typed only until IA0/F facade freezes."""
+
+    def get_catalog(self, *, merchant_ref: str, location_ref: str) -> CatalogProjection: ...
+
+    def resolve_quote(
+        self,
+        *,
+        merchant_ref: str,
+        location_ref: str,
+        cart: InteractionCart,
+        now_epoch: int,
+    ) -> CommercialQuoteSnapshot: ...
 
 
 class PaymentPort(Protocol):
