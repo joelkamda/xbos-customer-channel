@@ -10,15 +10,20 @@ class FakeXBOSCommerceClient:
     """Contract fixture. Simulates XBOS responses; it is not channel-owned business truth."""
 
     def __init__(self) -> None:
-        self.context = EntryContext("merchant:wnd", "location:logpom", "dine_in", "table:2")
+        self.context = EntryContext(
+            "merchant:fixture:alpha",
+            "location:fixture:one",
+            "dine_in",
+            "table:fixture:a1",
+        )
         self.menu = (
-            MenuItem("item:eru", "Eru", Decimal("3000"), "XAF"),
-            MenuItem("item:ndole", "Ndolè", Decimal("3000"), "XAF"),
+            MenuItem("item:fixture:one", "Fixture Item One", Decimal("3000"), "XAF"),
+            MenuItem("item:fixture:two", "Fixture Item Two", Decimal("3000"), "XAF"),
         )
         self._orders_by_key: dict[str, OrderRef] = {}
 
     def resolve_entry_context(self, entry_ref: str) -> EntryContext:
-        if entry_ref != "qr:wnd:logpom:table2":
+        if entry_ref != "entry:fixture:alpha":
             raise KeyError(entry_ref)
         return self.context
 
@@ -29,7 +34,13 @@ class FakeXBOSCommerceClient:
         selected = [item for item in self.menu if item.item_ref in set(item_refs)]
         if not selected:
             raise KeyError("no_items")
-        return Quote("quote:fixture:1", context.merchant_ref, sum((i.display_price for i in selected), Decimal("0")), "XAF", tuple(i.item_ref for i in selected))
+        return Quote(
+            "quote:fixture:1",
+            context.merchant_ref,
+            sum((item.display_price for item in selected), Decimal("0")),
+            "XAF",
+            tuple(item.item_ref for item in selected),
+        )
 
     def open_order(self, quote: Quote, idempotency_key: str) -> OrderRef:
         if idempotency_key not in self._orders_by_key:

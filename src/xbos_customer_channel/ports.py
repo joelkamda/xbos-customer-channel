@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Protocol, Sequence
 
+from .entry_context import EntryPurpose, EntryTokenRecord, MerchantContextProjection
 from .identity import ChannelIdentity, ConsentPurpose, ConsentRecord
 from .models import (
     EntryContext,
@@ -25,6 +26,27 @@ class XBOSCommercePort(Protocol):
     def get_order_status(self, order_ref: str) -> OrderRef: ...
     def get_receipt(self, order_ref: str) -> Receipt: ...
     def request_cancel_or_correction(self, order_ref: str, reason: str, idempotency_key: str) -> OrderRef: ...
+
+
+class XBOSContextPort(Protocol):
+    """Future-facing XBOS customer-safe context boundary; fake/typed only until IA0/F facade freezes."""
+
+    def resolve_context(
+        self,
+        *,
+        merchant_ref: str,
+        location_ref: str,
+        table_ref: str | None,
+        purpose: EntryPurpose,
+    ) -> MerchantContextProjection: ...
+
+
+class EntryTokenStorePort(Protocol):
+    """Channel entry/session infrastructure only. Never a merchant/location/table master."""
+
+    def put(self, record: EntryTokenRecord) -> None: ...
+    def get(self, token_ref: str) -> EntryTokenRecord | None: ...
+    def mark_consumed(self, token_ref: str, consumed_at_epoch: int) -> EntryTokenRecord: ...
 
 
 class PaymentPort(Protocol):

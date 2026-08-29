@@ -20,8 +20,8 @@ class XC1JourneyTests(unittest.TestCase):
 
         result = service.run_confirm_and_pay(
             customer_ref="customer:fixture:1",
-            entry_ref="qr:wnd:logpom:table2",
-            item_refs=["item:eru"],
+            entry_ref="entry:fixture:alpha",
+            item_refs=["item:fixture:one"],
             correlation_ref="corr:1",
         )
 
@@ -39,8 +39,8 @@ class XC1JourneyTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "payment_not_succeeded"):
             service.run_confirm_and_pay(
                 customer_ref="customer:fixture:1",
-                entry_ref="qr:wnd:logpom:table2",
-                item_refs=["item:eru"],
+                entry_ref="entry:fixture:alpha",
+                item_refs=["item:fixture:one"],
                 correlation_ref="corr:2",
             )
 
@@ -51,7 +51,7 @@ class XC1JourneyTests(unittest.TestCase):
 
     def test_idempotent_fake_requests_do_not_multiply_effects(self) -> None:
         commerce = FakeXBOSCommerceClient()
-        quote = commerce.resolve_quote(commerce.context, ["item:eru"])
+        quote = commerce.resolve_quote(commerce.context, ["item:fixture:one"])
         first = commerce.open_order(quote, "idem:order:1")
         second = commerce.open_order(quote, "idem:order:1")
         self.assertEqual(first, second)
