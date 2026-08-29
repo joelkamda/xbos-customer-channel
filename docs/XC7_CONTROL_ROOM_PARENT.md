@@ -1,0 +1,19 @@
+# XC7 CONTROL ROOM PARENT
+
+Program authorization:
+- HEAD `6372b30e584023867bac78b5486045a7352632eb`
+- TAG `xafpay-program-xc5-accepted-xc6-authorized-20260829`
+
+Frozen parent:
+- XC6 HEAD `b59659af1838fd1ce59c9d73347dab3f0ec4b4a1`
+- XC6 TAG `xbos-customer-channel-xc6-order-draft-service-mode-confirmation-20260829`
+- XC6 CONTRACT `XC6_ORDER_DRAFT_CONFIRMATION_CONTRACT_V1`
+
+Preserved:
+- `XC5_CONVERSATION_SESSION_STATE_CONTRACT_V1`
+- `XC4_CATALOG_QUOTE_CONTRACT_V1`
+- `XC3_ENTRY_CONTEXT_CONTRACT_V1`
+
+Authorization:
+`XC7=AUTHORIZED`
+`XC8=NOT_AUTHORIZED`

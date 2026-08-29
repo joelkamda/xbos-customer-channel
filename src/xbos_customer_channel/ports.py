@@ -6,6 +6,14 @@ from .catalog import CatalogProjection, CommercialQuoteSnapshot, InteractionCart
 from .entry_context import EntryPurpose, EntryTokenRecord, MerchantContextProjection
 from .identity import ChannelIdentity, ConsentPurpose, ConsentRecord
 from .order import AuthoritativeOrderConfirmationSnapshot, CanonicalOrderProjection, OrderSubmitRequest, ServiceMode, ServiceModeProjection
+from .order_lifecycle import (
+    CancellationDecision,
+    CancellationRequest,
+    FulfillmentProjection,
+    OrderChangeDecision,
+    OrderChangeRequest,
+    OrderLifecycleProjection,
+)
 from .models import (
     EntryContext,
     MenuItem,
@@ -91,6 +99,16 @@ class XBOSOrderPort(Protocol):
 
     def submit_order(self, request: OrderSubmitRequest) -> CanonicalOrderProjection: ...
     def get_order_by_client_ref(self, client_submit_ref: str) -> CanonicalOrderProjection | None: ...
+
+
+class XBOSOrderChangeFulfillmentPort(Protocol):
+    """Future-facing XBOS R1/R2/R3 lifecycle boundary; fake/typed only until IA0/F facade freezes."""
+
+    def request_order_change(self, request: OrderChangeRequest) -> OrderChangeDecision: ...
+    def request_cancellation(self, request: CancellationRequest) -> CancellationDecision: ...
+    def get_cancellation_projection(self, *, order_ref: str, correlation_ref: str) -> CancellationDecision | None: ...
+    def get_fulfillment_projection(self, *, order_ref: str, correlation_ref: str) -> FulfillmentProjection | None: ...
+    def reconcile_order_lifecycle(self, *, order_ref: str, correlation_ref: str) -> OrderLifecycleProjection: ...
 
 
 class CustomerSessionStorePort(Protocol):
