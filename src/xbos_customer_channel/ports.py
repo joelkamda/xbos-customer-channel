@@ -15,6 +15,7 @@ from .models import (
     Quote,
     Receipt,
 )
+from .session_state import CustomerSessionSnapshot, UpstreamStateProjection
 
 
 class XBOSCommercePort(Protocol):
@@ -63,6 +64,26 @@ class XBOSCatalogPort(Protocol):
         cart: InteractionCart,
         now_epoch: int,
     ) -> CommercialQuoteSnapshot: ...
+
+
+class CustomerSessionStorePort(Protocol):
+    """Channel session persistence only; no authoritative order/payment state storage."""
+
+    def put(self, session: CustomerSessionSnapshot) -> CustomerSessionSnapshot: ...
+    def get(self, session_ref: str) -> CustomerSessionSnapshot | None: ...
+    def idempotent_result(self, session_ref: str, idempotency_key: str) -> CustomerSessionSnapshot | None: ...
+    def record_idempotent_result(
+        self,
+        session_ref: str,
+        idempotency_key: str,
+        snapshot: CustomerSessionSnapshot,
+    ) -> CustomerSessionSnapshot: ...
+
+
+class XBOSStateReconciliationPort(Protocol):
+    """Typed state projection boundary. Real adapter remains blocked until the customer-safe facade freezes."""
+
+    def reconcile_session(self, session: CustomerSessionSnapshot) -> UpstreamStateProjection | None: ...
 
 
 class PaymentPort(Protocol):
