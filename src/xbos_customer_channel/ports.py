@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Protocol, Sequence
 
+from .identity import ChannelIdentity, ConsentPurpose, ConsentRecord
 from .models import (
-    CustomerIdentity,
     EntryContext,
     MenuItem,
     OrderRef,
@@ -40,5 +40,41 @@ class TransportPort(Protocol):
 
 
 class CustomerIdentityPort(Protocol):
-    def resolve_or_bind_customer(self, channel: str, channel_user_ref: str) -> CustomerIdentity: ...
-    def record_consent(self, customer_ref: str, purpose: str, idempotency_key: str) -> CustomerIdentity: ...
+    """Typed customer/Party boundary. Lookup, verification, linking and consent are distinct."""
+
+    def resolve_identity(
+        self,
+        *,
+        channel: str,
+        channel_user_ref: str,
+        conversation_ref: str,
+    ) -> ChannelIdentity: ...
+
+    def verify_identity(
+        self,
+        *,
+        identity_ref: str,
+        verification_evidence_ref: str,
+    ) -> ChannelIdentity: ...
+
+    def link_verified_party(
+        self,
+        *,
+        identity_ref: str,
+        party_ref: str,
+        verification_ref: str,
+    ) -> ChannelIdentity: ...
+
+    def restrict_identity(self, *, identity_ref: str, restriction_ref: str) -> ChannelIdentity: ...
+
+    def record_consent(
+        self,
+        *,
+        identity_ref: str,
+        purpose: ConsentPurpose,
+        granted: bool,
+        evidence_ref: str,
+        idempotency_key: str,
+    ) -> ConsentRecord: ...
+
+    def consent_for(self, *, identity_ref: str, purpose: ConsentPurpose) -> ConsentRecord | None: ...
