@@ -87,3 +87,15 @@ TRANCHE=SUCCESSION_GOVERNANCE
 DECISION=PCR accepted immutable Customer Channel handoff foundation commit 0ac40d8e7b32e4147dd2ebe02746311bdcf5802a. The handoff foundation is FROZEN_ACCEPTED. No Customer Channel implementation tranche or XC9 is authorized. CHANNEL_START_HERE.md remains a separate PCR gate.
 WHY=The repository living handoff must reflect completion and acceptance of its own foundation before becoming the authority target of the stable succession front door.
 REOPEN_AUTHORIZED=NO
+
+DECISION_ID=CHANNEL-GOV-009
+DATE=2026-09-05
+TRANCHE=SUCCESSION_GOVERNANCE
+DECISION=
+PCR accepted the verified CHANNEL_START_HERE installation and required a final living-handoff synchronization before succession could pass.
+The first cold-start test correctly failed closed because the stored living handoff predated CHANNEL_START_HERE installation.
+The durable state is now START_HERE installed with cold-start succession retest pending.
+No Customer Channel domain implementation or XC9 is authorized.
+WHY=
+A stable front door may remain static, but the living handoff must remain current to durable succession milestones.
+REOPEN_AUTHORIZED=NO
