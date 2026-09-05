@@ -79,3 +79,11 @@ WHY=The installed content and hashes passed PCR review and the living handoff mu
 SUPERSEDES=CHANNEL-GOV-006_ONLY_AS_TO_POST_HASH_REVIEW_STAGE_AND_COMMIT_AUTHORITY
 AFFECTS=governance/channel-handoff-bootstrap;governance/handoff/LIVING_HANDOFF.md;governance/handoff/EVIDENCE_INDEX.md;governance/handoff/DECISION_HISTORY.md
 REOPEN_AUTHORIZED=NO
+
+DECISION_ID=CHANNEL-GOV-008
+DATE=2026-09-05
+LANE=CUSTOMER_CHANNEL
+TRANCHE=SUCCESSION_GOVERNANCE
+DECISION=PCR accepted immutable Customer Channel handoff foundation commit 0ac40d8e7b32e4147dd2ebe02746311bdcf5802a. The handoff foundation is FROZEN_ACCEPTED. No Customer Channel implementation tranche or XC9 is authorized. CHANNEL_START_HERE.md remains a separate PCR gate.
+WHY=The repository living handoff must reflect completion and acceptance of its own foundation before becoming the authority target of the stable succession front door.
+REOPEN_AUTHORIZED=NO
