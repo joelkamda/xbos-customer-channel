@@ -33,13 +33,49 @@ class MerchantContextProjection:
 
 
 @dataclass(frozen=True, slots=True)
-class EntryTokenRecord:
-    token_ref: str
+class EntryContextAttestation:
+    """Server-side XBOS context attestation; transport callers never author this object."""
+
+    tenant_ref: str | None
     merchant_ref: str
     location_ref: str
     table_ref: str | None
     dining_area_ref: str | None
     purpose: EntryPurpose
+    context_binding_ref: str
+    projection: MerchantContextProjection
+
+    @property
+    def service_available(self) -> bool:
+        return self.projection.service_available
+
+    @property
+    def display_name(self) -> str:
+        return self.projection.display_name
+
+    @property
+    def terminology(self) -> tuple[tuple[str, str], ...]:
+        return self.projection.terminology
+
+    @property
+    def currency(self) -> str:
+        return self.projection.currency
+
+    @property
+    def allowed_fulfillment_modes(self) -> tuple[str, ...]:
+        return self.projection.allowed_fulfillment_modes
+
+
+@dataclass(frozen=True, slots=True)
+class EntryTokenRecord:
+    token_ref: str
+    tenant_ref: str | None
+    merchant_ref: str
+    location_ref: str
+    table_ref: str | None
+    dining_area_ref: str | None
+    purpose: EntryPurpose
+    context_binding_ref: str
     expires_at_epoch: int
     version: int
     replay_policy: ReplayPolicy
@@ -55,3 +91,5 @@ class ResolvedEntryContext:
     dining_area_ref: str | None
     purpose: EntryPurpose
     projection: MerchantContextProjection
+    tenant_ref: str | None = None
+    context_binding_ref: str = "legacy_unattested"

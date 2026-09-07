@@ -179,3 +179,141 @@ class XC3EntryContextTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+# CR1 adversarial security coverage appended under bounded remediation authority.
+class CR1EntrySecurityTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.xbos = FakeXBOSContextClient()
+        self.store = InMemoryEntryTokenStore()
+        self.codec = HmacEntryTokenCodec(b"x" * 32)
+        self.service = EntryContextService(
+            xbos_context=self.xbos,
+            token_store=self.store,
+            token_codec=self.codec,
+            link_builder=EntryLinkBuilder(
+                {
+                    EntryTarget.WHATSAPP: "https://whatsapp-entry.example/channel",
+                    EntryTarget.CUSTOMER_WEB: "https://customer-entry.example/entry",
+                }
+            ),
+        )
+
+    def issue(self, *, replay_policy=ReplayPolicy.REUSABLE):
+        return self.service.issue_entry(
+            merchant_ref="merchant:fixture:alpha",
+            location_ref="location:fixture:one",
+            table_ref="table:fixture:a1",
+            dining_area_ref="area:fixture:main",
+            purpose=EntryPurpose.DINE_IN,
+            expires_at_epoch=2000,
+            replay_policy=replay_policy,
+            now_epoch=1000,
+        )
+
+    def test_cr1_a01_foreign_table_denied(self) -> None:
+        with self.assertRaisesRegex(EntryContextRejected, "entry_context_unavailable"):
+            self.service.issue_entry(
+                merchant_ref="merchant:fixture:alpha",
+                location_ref="location:fixture:one",
+                table_ref="table:fixture:b1",
+                dining_area_ref=None,
+                purpose=EntryPurpose.DINE_IN,
+                expires_at_epoch=2000,
+                replay_policy=ReplayPolicy.REUSABLE,
+                now_epoch=1000,
+            )
+
+    def test_cr1_a02_a03_wrong_location_or_merchant_table_denied(self) -> None:
+        for merchant, location, table in (
+            ("merchant:fixture:alpha", "location:fixture:two", "table:fixture:b1"),
+            ("merchant:fixture:beta", "location:fixture:two", "table:fixture:a1"),
+        ):
+            with self.subTest(merchant=merchant, location=location, table=table):
+                with self.assertRaises(EntryContextRejected):
+                    self.service.issue_entry(
+                        merchant_ref=merchant,
+                        location_ref=location,
+                        table_ref=table,
+                        dining_area_ref=None,
+                        purpose=EntryPurpose.DINE_IN,
+                        expires_at_epoch=2000,
+                        replay_policy=ReplayPolicy.REUSABLE,
+                        now_epoch=1000,
+                    )
+
+    def test_cr1_a04_fake_tenant_scope_is_server_attested(self) -> None:
+        record_a, _ = self.issue()
+        record_b, _ = self.service.issue_entry(
+            merchant_ref="merchant:fixture:beta",
+            location_ref="location:fixture:two",
+            table_ref="table:fixture:b1",
+            dining_area_ref=None,
+            purpose=EntryPurpose.DINE_IN,
+            expires_at_epoch=2000,
+            replay_policy=ReplayPolicy.REUSABLE,
+            now_epoch=1000,
+        )
+        self.assertEqual(record_a.tenant_ref, "tenant:fixture:a")
+        self.assertEqual(record_b.tenant_ref, "tenant:fixture:b")
+        self.assertNotEqual(record_a.tenant_ref, record_b.tenant_ref)
+
+    def test_cr1_a11_reassignment_fails_closed_without_consuming_token(self) -> None:
+        record, token = self.issue(replay_policy=ReplayPolicy.SINGLE_USE)
+        self.xbos.reassign_table(
+            merchant_ref=record.merchant_ref,
+            location_ref=record.location_ref,
+            table_ref=record.table_ref or "",
+            dining_area_ref=record.dining_area_ref,
+        )
+        with self.assertRaisesRegex(EntryContextRejected, "stale_entry_context_rejected"):
+            self.service.resolve(token, now_epoch=1001)
+        self.assertIsNone(self.store.get(record.token_ref).consumed_at_epoch)
+
+    def test_cr1_a14_two_concurrent_single_use_resolvers_exactly_one_success(self) -> None:
+        from concurrent.futures import ThreadPoolExecutor
+
+        _, token = self.issue(replay_policy=ReplayPolicy.SINGLE_USE)
+
+        def resolve_once() -> str:
+            try:
+                self.service.resolve(token, now_epoch=1001)
+                return "success"
+            except EntryContextRejected:
+                return "deny"
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(lambda _: resolve_once(), range(2)))
+        self.assertEqual(results.count("success"), 1)
+        self.assertEqual(results.count("deny"), 1)
+
+    def test_cr1_c02_eight_concurrent_single_use_resolvers_exactly_one_success(self) -> None:
+        from concurrent.futures import ThreadPoolExecutor
+
+        _, token = self.issue(replay_policy=ReplayPolicy.SINGLE_USE)
+
+        def resolve_once() -> str:
+            try:
+                self.service.resolve(token, now_epoch=1001)
+                return "success"
+            except EntryContextRejected:
+                return "deny"
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            results = list(pool.map(lambda _: resolve_once(), range(8)))
+        self.assertEqual(results.count("success"), 1)
+        self.assertEqual(results.count("deny"), 7)
+
+    def test_cr1_c03_eight_concurrent_reusable_resolvers_all_succeed(self) -> None:
+        from concurrent.futures import ThreadPoolExecutor
+
+        _, token = self.issue(replay_policy=ReplayPolicy.REUSABLE)
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            results = list(pool.map(lambda _: self.service.resolve(token, now_epoch=1001), range(8)))
+        self.assertEqual(len(results), 8)
+        self.assertTrue(all(result.table_ref == "table:fixture:a1" for result in results))
+
+    def test_cr1_a17_public_token_stays_minimized(self) -> None:
+        record, token = self.issue()
+        for forbidden in (record.tenant_ref, record.merchant_ref, record.location_ref, record.table_ref, record.context_binding_ref):
+            if forbidden:
+                self.assertNotIn(forbidden, token)

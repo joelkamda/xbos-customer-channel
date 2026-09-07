@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
+from .entry_context import EntryPurpose
+
 
 class ChannelState(StrEnum):
     START = "start"
@@ -54,13 +56,28 @@ class MaterialAction(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class CustomerSessionSnapshot:
-    """Channel-owned interaction snapshot only; upstream refs are correlations, not business truth."""
+    """Channel interaction snapshot. Bound context is correlation state, never XBOS truth."""
 
     session_ref: str
     conversation_ref: str
     correlation_ref: str
     state: ChannelState
     entry_token_ref: str | None = None
+    owner_identity_ref: str | None = None
+    tenant_ref: str | None = None
+    merchant_ref: str | None = None
+    location_ref: str | None = None
+    table_ref: str | None = None
+    dining_area_ref: str | None = None
+    entry_purpose: EntryPurpose | None = None
+    context_binding_ref: str | None = None
+    created_at_epoch: int | None = None
+    expires_at_epoch: int | None = None
+    generation: int = 0
+    predecessor_session_ref: str | None = None
+    rotated_to_session_ref: str | None = None
+    invalidated_at_epoch: int | None = None
+    security_binding_complete: bool = False
     cart_ref: str | None = None
     quote_ref: str | None = None
     order_ref: str | None = None

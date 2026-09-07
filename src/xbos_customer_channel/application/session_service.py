@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import secrets
 from dataclasses import replace
 
-from ..ports import CustomerSessionStorePort, XBOSStateReconciliationPort
+from ..entry_context import ResolvedEntryContext
+from ..ports import CustomerSessionStorePort, XBOSContextPort, XBOSStateReconciliationPort
 from ..session_state import (
     ChannelState,
     CustomerSessionSnapshot,
@@ -32,8 +34,12 @@ class ExplicitConfirmationRequired(ValueError):
     pass
 
 
+class SessionSecurityRequired(PermissionError):
+    pass
+
+
 class CustomerSessionService:
-    """Deterministic interaction orchestration; never an order/payment/financial authority."""
+    """Interaction orchestration. Session bindings are security metadata, never domain truth."""
 
     TRANSITIONS: dict[ChannelState, frozenset[ChannelState]] = {
         ChannelState.START: frozenset({ChannelState.MERCHANT_CONTEXT, ChannelState.HUMAN_HANDOFF, ChannelState.CANCELED}),
@@ -69,28 +75,191 @@ class CustomerSessionService:
         *,
         store: CustomerSessionStorePort,
         reconciliation: XBOSStateReconciliationPort,
+        xbos_context: XBOSContextPort | None = None,
     ) -> None:
         self._store = store
         self._reconciliation = reconciliation
+        self._xbos_context = xbos_context
+
+    @staticmethod
+    def _new_session_ref() -> str:
+        return "sess_" + secrets.token_urlsafe(32)
+
+    def _assert_entry_context_current(self, entry_context: ResolvedEntryContext) -> None:
+        if self._xbos_context is None:
+            raise SessionSecurityRequired("xbos_context_reattestation_required")
+        try:
+            attestation = self._xbos_context.attest_context(
+                merchant_ref=entry_context.merchant_ref,
+                location_ref=entry_context.location_ref,
+                table_ref=entry_context.table_ref,
+                purpose=entry_context.purpose,
+                dining_area_ref=entry_context.dining_area_ref,
+            )
+        except (KeyError, PermissionError, ValueError):
+            raise SessionSecurityRequired("entry_context_unavailable") from None
+        expected = (
+            entry_context.tenant_ref,
+            entry_context.merchant_ref,
+            entry_context.location_ref,
+            entry_context.table_ref,
+            entry_context.dining_area_ref,
+            entry_context.purpose,
+            entry_context.context_binding_ref,
+        )
+        observed = (
+            attestation.tenant_ref,
+            attestation.merchant_ref,
+            attestation.location_ref,
+            attestation.table_ref,
+            attestation.dining_area_ref,
+            attestation.purpose,
+            attestation.context_binding_ref,
+        )
+        if expected != observed:
+            raise SessionSecurityRequired("stale_entry_context_rejected")
 
     def create_session(
         self,
         *,
-        session_ref: str,
         conversation_ref: str,
         correlation_ref: str,
+        owner_identity_ref: str | None = None,
+        entry_context: ResolvedEntryContext | None = None,
+        now_epoch: int | None = None,
+        expires_at_epoch: int | None = None,
+        session_ref: str | None = None,
         entry_token_ref: str | None = None,
     ) -> CustomerSessionSnapshot:
-        if self._store.get(session_ref) is not None:
-            raise ValueError("session_already_exists")
+        """Create a server-issued session.
+
+        ``session_ref``/``entry_token_ref`` remain accepted solely as non-resumable
+        frozen-fixture aliases for XC6 regression compatibility. They never become
+        the server-issued session reference and are not accepted by secure resume.
+        """
+        actual_ref = self._new_session_ref()
+        while self._store.get(actual_ref) is not None:
+            actual_ref = self._new_session_ref()
+
+        secure = owner_identity_ref is not None or entry_context is not None or expires_at_epoch is not None
+        if secure:
+            if owner_identity_ref is None or entry_context is None or now_epoch is None or expires_at_epoch is None:
+                raise SessionSecurityRequired("secure_session_binding_incomplete")
+            if not owner_identity_ref:
+                raise SessionSecurityRequired("session_owner_identity_required")
+            if expires_at_epoch <= now_epoch:
+                raise SessionSecurityRequired("session_expiry_must_be_future")
+            if entry_token_ref is not None and entry_token_ref != entry_context.token_ref:
+                raise SessionSecurityRequired("entry_token_binding_mismatch")
+            self._assert_entry_context_current(entry_context)
+            snapshot = CustomerSessionSnapshot(
+                session_ref=actual_ref,
+                conversation_ref=conversation_ref,
+                correlation_ref=correlation_ref,
+                state=ChannelState.START,
+                entry_token_ref=entry_context.token_ref,
+                owner_identity_ref=owner_identity_ref,
+                tenant_ref=entry_context.tenant_ref,
+                merchant_ref=entry_context.merchant_ref,
+                location_ref=entry_context.location_ref,
+                table_ref=entry_context.table_ref,
+                dining_area_ref=entry_context.dining_area_ref,
+                entry_purpose=entry_context.purpose,
+                context_binding_ref=entry_context.context_binding_ref,
+                created_at_epoch=now_epoch,
+                expires_at_epoch=expires_at_epoch,
+                generation=0,
+                security_binding_complete=True,
+            )
+            return self._store.put(snapshot)
+
+        # Historical test compatibility only. The caller value is an alias, not a
+        # session identity, and cannot be resumed through the security path.
         snapshot = CustomerSessionSnapshot(
-            session_ref=session_ref,
+            session_ref=actual_ref,
             conversation_ref=conversation_ref,
             correlation_ref=correlation_ref,
             state=ChannelState.START,
             entry_token_ref=entry_token_ref,
+            security_binding_complete=False,
         )
-        return self._store.put(snapshot)
+        stored = self._store.put_with_legacy_alias(snapshot, session_ref)
+        if session_ref is not None:
+            return replace(stored, session_ref=session_ref)
+        return stored
+
+    def resume_session(
+        self,
+        *,
+        session_ref: str,
+        owner_identity_ref: str,
+        now_epoch: int,
+    ) -> CustomerSessionSnapshot:
+        if self._store.canonical_ref(session_ref) != session_ref:
+            raise SessionSecurityRequired("fixture_alias_not_resumable")
+        current = self._required(session_ref)
+        if not current.security_binding_complete:
+            raise SessionSecurityRequired("secure_session_binding_required")
+        if current.owner_identity_ref != owner_identity_ref:
+            raise PermissionError("session_owner_mismatch")
+        if current.expires_at_epoch is None or now_epoch >= current.expires_at_epoch:
+            raise PermissionError("session_expired")
+        if current.invalidated_at_epoch is not None or current.rotated_to_session_ref is not None:
+            raise PermissionError("session_stale_or_rotated")
+        if self._xbos_context is None:
+            raise SessionSecurityRequired("xbos_context_reattestation_required")
+        if current.merchant_ref is None or current.location_ref is None or current.entry_purpose is None:
+            raise SessionSecurityRequired("bound_context_incomplete")
+
+        try:
+            attestation = self._xbos_context.attest_context(
+                merchant_ref=current.merchant_ref,
+                location_ref=current.location_ref,
+                table_ref=current.table_ref,
+                purpose=current.entry_purpose,
+                dining_area_ref=current.dining_area_ref,
+            )
+        except (KeyError, PermissionError, ValueError):
+            raise SessionSecurityRequired("entry_context_unavailable") from None
+
+        bound = (
+            current.tenant_ref,
+            current.merchant_ref,
+            current.location_ref,
+            current.table_ref,
+            current.dining_area_ref,
+            current.entry_purpose,
+            current.context_binding_ref,
+        )
+        current_attested = (
+            attestation.tenant_ref,
+            attestation.merchant_ref,
+            attestation.location_ref,
+            attestation.table_ref,
+            attestation.dining_area_ref,
+            attestation.purpose,
+            attestation.context_binding_ref,
+        )
+        if bound != current_attested:
+            raise SessionSecurityRequired("stale_entry_context_rejected")
+
+        replacement = replace(
+            current,
+            session_ref=self._new_session_ref(),
+            predecessor_session_ref=current.session_ref,
+            rotated_to_session_ref=None,
+            invalidated_at_epoch=None,
+            generation=current.generation + 1,
+        )
+        rotated = self._store.rotate_if_active(
+            session_ref=current.session_ref,
+            expected_owner_identity_ref=owner_identity_ref,
+            now_epoch=now_epoch,
+            replacement=replacement,
+        )
+        if rotated is None:
+            raise PermissionError("session_stale_or_rotated")
+        return rotated
 
     def attach_interaction_refs(
         self,
@@ -116,6 +285,8 @@ class CustomerSessionService:
             return prior
 
         current = self._required(session_ref)
+        if current.invalidated_at_epoch is not None or current.rotated_to_session_ref is not None:
+            raise PermissionError("session_stale_or_rotated")
         allowed = self.TRANSITIONS[current.state]
         if target not in allowed:
             raise InvalidChannelTransition(f"invalid_transition:{current.state.value}->{target.value}")
@@ -145,17 +316,18 @@ class CustomerSessionService:
         return self._store.record_idempotent_result(session_ref, idempotency_key, updated)
 
     def reenter(self, session_ref: str) -> CustomerSessionSnapshot:
-        """Reconcile upstream-dependent projection state instead of trusting a stale local snapshot."""
+        """Business-state reconciliation only; secure owner/session resume is ``resume_session``."""
+        canonical_ref = self._store.canonical_ref(session_ref)
         current = self._required(session_ref)
         if current.state not in self._EVIDENCE_GATED and not current.order_ref and not current.payment_ref:
-            return current
+            return replace(current, session_ref=session_ref) if canonical_ref != session_ref else current
 
         projection = self._reconciliation.reconcile_session(current)
         if projection is None:
             raise SessionReconciliationRequired("authoritative_upstream_state_required_for_reentry")
         self._assert_evidence_matches_session(current, projection)
         projected_state = self._state_from_projection(projection)
-        return self._store.put(
+        updated = self._store.put(
             replace(
                 current,
                 state=projected_state,
@@ -164,6 +336,7 @@ class CustomerSessionService:
                 last_upstream_evidence_ref=projection.evidence_ref,
             )
         )
+        return replace(updated, session_ref=session_ref) if canonical_ref != session_ref else updated
 
     @staticmethod
     def resolve_material_input(

@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import secrets
 import time
-from dataclasses import replace
 from urllib.parse import parse_qs, urlparse
 
 from ..entry_context import (
+    EntryContextAttestation,
     EntryPurpose,
     EntryTarget,
     EntryTokenRecord,
@@ -22,7 +22,7 @@ class EntryContextRejected(PermissionError):
 
 
 class EntryContextService:
-    """Channel entry orchestration. Canonical merchant/location semantics remain XBOS-owned."""
+    """Channel entry orchestration. Canonical merchant/location/table semantics remain XBOS-owned."""
 
     TOKEN_VERSION = 1
 
@@ -38,6 +38,37 @@ class EntryContextService:
         self._store = token_store
         self._codec = token_codec
         self._links = link_builder
+
+    @staticmethod
+    def _assert_attestation_matches_request(
+        attestation: EntryContextAttestation,
+        *,
+        merchant_ref: str,
+        location_ref: str,
+        table_ref: str | None,
+        dining_area_ref: str | None,
+        purpose: EntryPurpose,
+    ) -> None:
+        if attestation.merchant_ref != merchant_ref or attestation.location_ref != location_ref:
+            raise EntryContextRejected("entry_context_chain_mismatch")
+        if attestation.table_ref != table_ref or attestation.purpose is not purpose:
+            raise EntryContextRejected("entry_context_chain_mismatch")
+        if dining_area_ref is not None and attestation.dining_area_ref != dining_area_ref:
+            raise EntryContextRejected("entry_context_chain_mismatch")
+        if not attestation.context_binding_ref:
+            raise EntryContextRejected("entry_context_binding_missing")
+
+    @staticmethod
+    def _record_matches_attestation(record: EntryTokenRecord, attestation: EntryContextAttestation) -> bool:
+        return (
+            record.tenant_ref == attestation.tenant_ref
+            and record.merchant_ref == attestation.merchant_ref
+            and record.location_ref == attestation.location_ref
+            and record.table_ref == attestation.table_ref
+            and record.dining_area_ref == attestation.dining_area_ref
+            and record.purpose is attestation.purpose
+            and record.context_binding_ref == attestation.context_binding_ref
+        )
 
     def issue_entry(
         self,
@@ -57,22 +88,36 @@ class EntryContextService:
         if purpose is EntryPurpose.DINE_IN and table_ref is None:
             raise ValueError("table_required_for_dine_in")
 
-        # Validate future XBOS authority before issuing a channel entry reference.
-        self._xbos.resolve_context(
-            merchant_ref=merchant_ref,
-            location_ref=location_ref,
-            table_ref=table_ref,
-            purpose=purpose,
-        )
-        token_ref = "ent_" + secrets.token_urlsafe(24)
-        nonce = secrets.token_urlsafe(18)
-        record = EntryTokenRecord(
-            token_ref=token_ref,
+        try:
+            attestation = self._xbos.attest_context(
+                merchant_ref=merchant_ref,
+                location_ref=location_ref,
+                table_ref=table_ref,
+                purpose=purpose,
+                dining_area_ref=dining_area_ref,
+            )
+        except (KeyError, PermissionError, ValueError):
+            raise EntryContextRejected("entry_context_unavailable") from None
+        self._assert_attestation_matches_request(
+            attestation,
             merchant_ref=merchant_ref,
             location_ref=location_ref,
             table_ref=table_ref,
             dining_area_ref=dining_area_ref,
             purpose=purpose,
+        )
+
+        token_ref = "ent_" + secrets.token_urlsafe(24)
+        nonce = secrets.token_urlsafe(18)
+        record = EntryTokenRecord(
+            token_ref=token_ref,
+            tenant_ref=attestation.tenant_ref,
+            merchant_ref=attestation.merchant_ref,
+            location_ref=attestation.location_ref,
+            table_ref=attestation.table_ref,
+            dining_area_ref=attestation.dining_area_ref,
+            purpose=attestation.purpose,
+            context_binding_ref=attestation.context_binding_ref,
             expires_at_epoch=expires_at_epoch,
             version=self.TOKEN_VERSION,
             replay_policy=replay_policy,
@@ -100,7 +145,6 @@ class EntryContextService:
             raise EntryContextRejected(str(exc)) from None
 
         record = self._store.get(envelope.token_ref)
-        # Unknown token, mismatched expiry or mismatched version all fail closed.
         if (
             record is None
             or record.version != envelope.version
@@ -111,33 +155,38 @@ class EntryContextService:
         if expected_merchant_ref is not None and record.merchant_ref != expected_merchant_ref:
             raise EntryContextRejected("cross_tenant_context_rejected")
 
-        if (
-            record.replay_policy is ReplayPolicy.SINGLE_USE
-            and record.consumed_at_epoch is not None
-        ):
+        if record.replay_policy is ReplayPolicy.SINGLE_USE and record.consumed_at_epoch is not None:
             raise EntryContextRejected("unsafe_replay_rejected")
 
         try:
-            projection = self._xbos.resolve_context(
+            attestation = self._xbos.attest_context(
                 merchant_ref=record.merchant_ref,
                 location_ref=record.location_ref,
                 table_ref=record.table_ref,
                 purpose=record.purpose,
+                dining_area_ref=record.dining_area_ref,
             )
         except (KeyError, PermissionError, ValueError):
             raise EntryContextRejected("entry_context_unavailable") from None
 
+        if not self._record_matches_attestation(record, attestation):
+            raise EntryContextRejected("stale_entry_context_rejected")
+
         if record.replay_policy is ReplayPolicy.SINGLE_USE:
-            self._store.mark_consumed(record.token_ref, current)
+            claimed = self._store.consume_if_unconsumed(record.token_ref, current)
+            if claimed is None:
+                raise EntryContextRejected("unsafe_replay_rejected")
 
         return ResolvedEntryContext(
             token_ref=record.token_ref,
-            merchant_ref=record.merchant_ref,
-            location_ref=record.location_ref,
-            table_ref=record.table_ref,
-            dining_area_ref=record.dining_area_ref,
-            purpose=record.purpose,
-            projection=projection,
+            tenant_ref=attestation.tenant_ref,
+            merchant_ref=attestation.merchant_ref,
+            location_ref=attestation.location_ref,
+            table_ref=attestation.table_ref,
+            dining_area_ref=attestation.dining_area_ref,
+            purpose=attestation.purpose,
+            context_binding_ref=attestation.context_binding_ref,
+            projection=attestation.projection,
         )
 
     def launch_links(self, public_token: str) -> dict[EntryTarget, str]:

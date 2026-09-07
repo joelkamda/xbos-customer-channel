@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Protocol, Sequence
 
 from .catalog import CatalogProjection, CommercialQuoteSnapshot, InteractionCart
-from .entry_context import EntryPurpose, EntryTokenRecord, MerchantContextProjection
+from .entry_context import EntryContextAttestation, EntryPurpose, EntryTokenRecord, MerchantContextProjection
 from .identity import ChannelIdentity, ConsentPurpose, ConsentRecord
 from .order import AuthoritativeOrderConfirmationSnapshot, CanonicalOrderProjection, OrderSubmitRequest, ServiceMode, ServiceModeProjection
 from .payment_experience import CanonicalPaymentRequestProjection
@@ -52,13 +52,23 @@ class XBOSContextPort(Protocol):
         purpose: EntryPurpose,
     ) -> MerchantContextProjection: ...
 
+    def attest_context(
+        self,
+        *,
+        merchant_ref: str,
+        location_ref: str,
+        table_ref: str | None,
+        purpose: EntryPurpose,
+        dining_area_ref: str | None = None,
+    ) -> EntryContextAttestation: ...
+
 
 class EntryTokenStorePort(Protocol):
     """Channel entry/session infrastructure only. Never a merchant/location/table master."""
 
     def put(self, record: EntryTokenRecord) -> None: ...
     def get(self, token_ref: str) -> EntryTokenRecord | None: ...
-    def mark_consumed(self, token_ref: str, consumed_at_epoch: int) -> EntryTokenRecord: ...
+    def consume_if_unconsumed(self, token_ref: str, consumed_at_epoch: int) -> EntryTokenRecord | None: ...
 
 
 class XBOSCatalogPort(Protocol):
@@ -127,7 +137,9 @@ class CustomerSessionStorePort(Protocol):
     """Channel session persistence only; no authoritative order/payment state storage."""
 
     def put(self, session: CustomerSessionSnapshot) -> CustomerSessionSnapshot: ...
+    def put_with_legacy_alias(self, session: CustomerSessionSnapshot, alias: str | None) -> CustomerSessionSnapshot: ...
     def get(self, session_ref: str) -> CustomerSessionSnapshot | None: ...
+    def canonical_ref(self, session_ref: str) -> str: ...
     def idempotent_result(self, session_ref: str, idempotency_key: str) -> CustomerSessionSnapshot | None: ...
     def record_idempotent_result(
         self,
@@ -135,6 +147,14 @@ class CustomerSessionStorePort(Protocol):
         idempotency_key: str,
         snapshot: CustomerSessionSnapshot,
     ) -> CustomerSessionSnapshot: ...
+    def rotate_if_active(
+        self,
+        *,
+        session_ref: str,
+        expected_owner_identity_ref: str,
+        now_epoch: int,
+        replacement: CustomerSessionSnapshot,
+    ) -> CustomerSessionSnapshot | None: ...
 
 
 class XBOSStateReconciliationPort(Protocol):
