@@ -18,6 +18,7 @@ from xbos_customer_channel.application.session_service import AuthoritativeEvide
 from xbos_customer_channel.entry_context import EntryPurpose, ResolvedEntryContext
 from xbos_customer_channel.order import OrderSubmissionConflict, OrderSubmitRequest, ServiceMode
 from xbos_customer_channel.persistence.provenance_records import InMemoryChannelProvenanceStore
+from xbos_customer_channel.persistence.identity_records import InMemoryIdentityBindingStore
 from xbos_customer_channel.persistence.session_records import InMemoryCustomerSessionStore
 from xbos_customer_channel.session_state import (
     ChannelState,
@@ -37,11 +38,13 @@ class CR2AuthoritativeProvenanceTests(unittest.TestCase):
         self.reconcile = FakeXBOSStateReconciliationClient()
         self.sessions_store = InMemoryCustomerSessionStore()
         self.provenance = InMemoryChannelProvenanceStore()
+        self.identity_bindings = InMemoryIdentityBindingStore()
         self.sessions = CustomerSessionService(
             store=self.sessions_store,
             reconciliation=self.reconcile,
             provenance_store=self.provenance,
             xbos_context=self.context,
+            identity_binding_store=self.identity_bindings,
         )
         self.order_service = OrderDraftConfirmationService(
             catalog=self.catalog,
@@ -90,10 +93,25 @@ class CR2AuthoritativeProvenanceTests(unittest.TestCase):
     ):
         resolved = resolved or self.resolved_entry()
         self._counter += 1
+        conversation_ref = f"conversation:cr2:{self._counter}"
+        binding = self.identity_bindings.issue_binding(
+            identity_ref=owner,
+            canonical_channel_subject_ref=f"subject:{owner}",
+            subject_attestation_ref=f"subject_attestation:{owner}",
+            conversation_ref=conversation_ref,
+            tenant_ref=resolved.tenant_ref,
+            merchant_ref=resolved.merchant_ref,
+            location_ref=resolved.location_ref,
+            table_ref=resolved.table_ref,
+            dining_area_ref=resolved.dining_area_ref,
+            context_binding_ref=resolved.context_binding_ref,
+            issued_at_epoch=900,
+            expires_at_epoch=5000,
+        )
         session = self.sessions.create_session(
-            conversation_ref=f"conversation:cr2:{self._counter}",
+            conversation_ref=conversation_ref,
             correlation_ref=f"correlation:cr2:{self._counter}",
-            owner_identity_ref=owner,
+            identity_binding_ref=binding.identity_binding_ref,
             entry_context=resolved,
             now_epoch=900,
             expires_at_epoch=5000,
@@ -385,20 +403,34 @@ class CR2AuthoritativeProvenanceTests(unittest.TestCase):
 
     def test_cr2_a23_cr1_security_non_regression(self) -> None:
         resolved = self.resolved_entry()
+        binding = self.identity_bindings.issue_binding(
+            identity_ref="identity:a23",
+            canonical_channel_subject_ref="subject:a23",
+            subject_attestation_ref="subject_attestation:a23",
+            conversation_ref="conversation:a23",
+            tenant_ref=resolved.tenant_ref,
+            merchant_ref=resolved.merchant_ref,
+            location_ref=resolved.location_ref,
+            table_ref=resolved.table_ref,
+            dining_area_ref=resolved.dining_area_ref,
+            context_binding_ref=resolved.context_binding_ref,
+            issued_at_epoch=1000,
+            expires_at_epoch=2000,
+        )
         session = self.sessions.create_session(
             session_ref="caller-fixed",
             conversation_ref="conversation:a23",
             correlation_ref="correlation:a23",
-            owner_identity_ref="identity:a23",
+            identity_binding_ref=binding.identity_binding_ref,
             entry_context=resolved,
             now_epoch=1000,
             expires_at_epoch=2000,
         )
         self.assertNotEqual(session.session_ref, "caller-fixed")
-        rotated = self.sessions.resume_session(session_ref=session.session_ref, owner_identity_ref="identity:a23", now_epoch=1001)
+        rotated = self.sessions.resume_session(session_ref=session.session_ref, identity_binding_ref=binding.identity_binding_ref, now_epoch=1001)
         self.assertEqual(rotated.generation, 1)
         with self.assertRaisesRegex(PermissionError, "stale_or_rotated"):
-            self.sessions.resume_session(session_ref=session.session_ref, owner_identity_ref="identity:a23", now_epoch=1002)
+            self.sessions.resume_session(session_ref=session.session_ref, identity_binding_ref=binding.identity_binding_ref, now_epoch=1002)
 
     def test_cr2_a24_a0_005_remains_open_for_cr4(self) -> None:
         root = Path(__file__).resolve().parents[1] / "src" / "xbos_customer_channel"
@@ -494,9 +526,23 @@ class CR2AuthoritativeProvenanceTests(unittest.TestCase):
 
     def test_cr2_c08_handle_after_session_rotation_denied_and_reprepare_required(self) -> None:
         resolved, session, confirmation = self.prepare_alpha()
+        binding = self.identity_bindings.issue_binding(
+            identity_ref=session.owner_identity_ref or "",
+            canonical_channel_subject_ref="subject:identity:fixture:cr2",
+            subject_attestation_ref="subject_attestation:identity:fixture:cr2",
+            conversation_ref=session.conversation_ref,
+            tenant_ref=session.tenant_ref,
+            merchant_ref=session.merchant_ref or "",
+            location_ref=session.location_ref or "",
+            table_ref=session.table_ref,
+            dining_area_ref=session.dining_area_ref,
+            context_binding_ref=session.context_binding_ref or "",
+            issued_at_epoch=1000,
+            expires_at_epoch=5000,
+        )
         rotated = self.sessions.resume_session(
             session_ref=session.session_ref,
-            owner_identity_ref="identity:fixture:cr2",
+            identity_binding_ref=binding.identity_binding_ref,
             now_epoch=1001,
         )
         with self.assertRaisesRegex(OrderConfirmationRejected, "session_context_mismatch"):

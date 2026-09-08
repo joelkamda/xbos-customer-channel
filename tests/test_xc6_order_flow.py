@@ -23,6 +23,7 @@ from xbos_customer_channel.order import (
     ServiceModeUnavailable,
 )
 from xbos_customer_channel.persistence.provenance_records import InMemoryChannelProvenanceStore
+from xbos_customer_channel.persistence.identity_records import InMemoryIdentityBindingStore
 from xbos_customer_channel.persistence.session_records import InMemoryCustomerSessionStore
 from xbos_customer_channel.session_state import ChannelState
 
@@ -66,11 +67,13 @@ class XC6OrderFlowTests(unittest.TestCase):
         self.context_fake = FakeXBOSContextClient()
         self.store = InMemoryCustomerSessionStore()
         self.provenance = InMemoryChannelProvenanceStore()
+        self.identity_bindings = InMemoryIdentityBindingStore()
         self.sessions = CustomerSessionService(
             store=self.store,
             reconciliation=FakeXBOSStateReconciliationClient(),
             provenance_store=self.provenance,
             xbos_context=self.context_fake,
+            identity_binding_store=self.identity_bindings,
         )
         self.service = OrderDraftConfirmationService(
             catalog=self.catalog,
@@ -86,10 +89,25 @@ class XC6OrderFlowTests(unittest.TestCase):
         return self.catalog.add_to_cart(session, item_ref="item:fixture:one", quantity=1), resolved
 
     def secure_session(self, resolved: ResolvedEntryContext):
+        conversation_ref = f"conversation:xc6:{resolved.token_ref}"
+        binding = self.identity_bindings.issue_binding(
+            identity_ref="identity:fixture:customer",
+            canonical_channel_subject_ref="subject:fixture:customer",
+            subject_attestation_ref="subject_attestation:fixture:customer",
+            conversation_ref=conversation_ref,
+            tenant_ref=resolved.tenant_ref,
+            merchant_ref=resolved.merchant_ref,
+            location_ref=resolved.location_ref,
+            table_ref=resolved.table_ref,
+            dining_area_ref=resolved.dining_area_ref,
+            context_binding_ref=resolved.context_binding_ref,
+            issued_at_epoch=900,
+            expires_at_epoch=5000,
+        )
         session = self.sessions.create_session(
-            conversation_ref=f"conversation:xc6:{resolved.token_ref}",
+            conversation_ref=conversation_ref,
             correlation_ref=f"correlation:xc6:{resolved.token_ref}",
-            owner_identity_ref="identity:fixture:customer",
+            identity_binding_ref=binding.identity_binding_ref,
             entry_context=resolved,
             now_epoch=900,
             expires_at_epoch=5000,

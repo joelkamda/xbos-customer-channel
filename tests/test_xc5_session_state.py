@@ -14,6 +14,7 @@ from xbos_customer_channel.application.session_service import (
 )
 from xbos_customer_channel.persistence.provenance_records import InMemoryChannelProvenanceStore
 from xbos_customer_channel.persistence.session_records import InMemoryCustomerSessionStore
+from xbos_customer_channel.persistence.identity_records import InMemoryIdentityBindingStore
 from xbos_customer_channel.session_state import (
     ChannelState,
     MaterialAction,
@@ -270,10 +271,12 @@ class CR1SessionSecurityTests(unittest.TestCase):
 
         self.xbos = FakeXBOSContextClient()
         self.store = InMemoryCustomerSessionStore()
+        self.bindings = InMemoryIdentityBindingStore()
         self.service = CustomerSessionService(
             store=self.store,
             reconciliation=FakeXBOSStateReconciliationClient(),
             xbos_context=self.xbos,
+            identity_binding_store=self.bindings,
         )
         att = self.xbos.attest_context(
             merchant_ref="merchant:fixture:alpha",
@@ -294,36 +297,57 @@ class CR1SessionSecurityTests(unittest.TestCase):
             context_binding_ref=att.context_binding_ref,
         )
 
+    def issue_binding(self, *, owner="identity:fixture:a", entry=None, conversation="conv:secure:1", expires=5000):
+        entry = entry or self.entry
+        return self.bindings.issue_binding(
+            identity_ref=owner,
+            canonical_channel_subject_ref=f"subject:{owner}",
+            subject_attestation_ref=f"subject_attestation:{owner}",
+            conversation_ref=conversation,
+            tenant_ref=entry.tenant_ref,
+            merchant_ref=entry.merchant_ref,
+            location_ref=entry.location_ref,
+            table_ref=entry.table_ref,
+            dining_area_ref=entry.dining_area_ref,
+            context_binding_ref=entry.context_binding_ref,
+            issued_at_epoch=900,
+            expires_at_epoch=expires,
+        )
+
     def create_secure(self, *, owner="identity:fixture:a", session_ref=None, expires=2000):
-        return self.service.create_session(
+        binding = self.issue_binding(owner=owner, expires=max(expires, 5000))
+        session = self.service.create_session(
             session_ref=session_ref,
             conversation_ref="conv:secure:1",
             correlation_ref="corr:secure:1",
-            owner_identity_ref=owner,
+            identity_binding_ref=binding.identity_binding_ref,
             entry_context=self.entry,
             now_epoch=1000,
             expires_at_epoch=expires,
         )
+        return session, binding
 
     def test_cr1_a05_nonexistent_entry_context_denied(self) -> None:
         from dataclasses import replace
         bad = replace(self.entry, table_ref="table:fixture:does-not-exist", context_binding_ref="forged")
+        binding = self.issue_binding(entry=bad, conversation="conv:bad")
         with self.assertRaisesRegex(Exception, "entry_context_unavailable"):
             self.service.create_session(
                 conversation_ref="conv:bad",
                 correlation_ref="corr:bad",
-                owner_identity_ref="identity:fixture:a",
+                identity_binding_ref=binding.identity_binding_ref,
                 entry_context=bad,
                 now_epoch=1000,
                 expires_at_epoch=2000,
             )
 
     def test_cr1_a06_entry_token_binding_mismatch_denied(self) -> None:
+        binding = self.issue_binding(conversation="conv:bad")
         with self.assertRaisesRegex(Exception, "entry_token_binding_mismatch"):
             self.service.create_session(
                 conversation_ref="conv:bad",
                 correlation_ref="corr:bad",
-                owner_identity_ref="identity:fixture:a",
+                identity_binding_ref=binding.identity_binding_ref,
                 entry_context=self.entry,
                 entry_token_ref="ent_other",
                 now_epoch=1000,
@@ -331,30 +355,31 @@ class CR1SessionSecurityTests(unittest.TestCase):
             )
 
     def test_cr1_a08a_distinct_owner_resume_denied(self) -> None:
-        session = self.create_secure()
+        session, _ = self.create_secure()
+        other = self.issue_binding(owner="identity:fixture:b")
         with self.assertRaisesRegex(PermissionError, "session_owner_mismatch"):
             self.service.resume_session(
                 session_ref=session.session_ref,
-                owner_identity_ref="identity:fixture:b",
+                identity_binding_ref=other.identity_binding_ref,
                 now_epoch=1001,
             )
 
     def test_cr1_a09_expired_session_denied(self) -> None:
-        session = self.create_secure(expires=1001)
+        session, binding = self.create_secure(expires=1001)
         with self.assertRaisesRegex(PermissionError, "session_expired"):
             self.service.resume_session(
                 session_ref=session.session_ref,
-                owner_identity_ref="identity:fixture:a",
+                identity_binding_ref=binding.identity_binding_ref,
                 now_epoch=1001,
             )
 
     def test_cr1_a10_caller_session_ref_is_not_actual_session_ref(self) -> None:
-        session = self.create_secure(session_ref="attacker-fixed-session")
+        session, _ = self.create_secure(session_ref="attacker-fixed-session")
         self.assertNotEqual(session.session_ref, "attacker-fixed-session")
         self.assertTrue(session.session_ref.startswith("sess_"))
 
     def test_cr1_a11_stale_context_reassignment_blocks_resume(self) -> None:
-        session = self.create_secure()
+        session, binding = self.create_secure()
         self.xbos.reassign_table(
             merchant_ref="merchant:fixture:alpha",
             location_ref="location:fixture:one",
@@ -364,20 +389,20 @@ class CR1SessionSecurityTests(unittest.TestCase):
         with self.assertRaisesRegex(Exception, "stale_entry_context_rejected"):
             self.service.resume_session(
                 session_ref=session.session_ref,
-                owner_identity_ref="identity:fixture:a",
+                identity_binding_ref=binding.identity_binding_ref,
                 now_epoch=1001,
             )
 
     def test_cr1_c06_two_concurrent_resumes_exactly_one_rotation(self) -> None:
         from concurrent.futures import ThreadPoolExecutor
 
-        session = self.create_secure()
+        session, binding = self.create_secure()
 
         def resume_once() -> str:
             try:
                 self.service.resume_session(
                     session_ref=session.session_ref,
-                    owner_identity_ref="identity:fixture:a",
+                    identity_binding_ref=binding.identity_binding_ref,
                     now_epoch=1001,
                 )
                 return "success"
@@ -390,25 +415,25 @@ class CR1SessionSecurityTests(unittest.TestCase):
         self.assertEqual(results.count("deny"), 1)
 
     def test_cr1_c07_old_session_after_rotation_denied(self) -> None:
-        session = self.create_secure()
+        session, binding = self.create_secure()
         rotated = self.service.resume_session(
             session_ref=session.session_ref,
-            owner_identity_ref="identity:fixture:a",
+            identity_binding_ref=binding.identity_binding_ref,
             now_epoch=1001,
         )
         self.assertEqual(rotated.generation, 1)
         with self.assertRaisesRegex(PermissionError, "session_stale_or_rotated"):
             self.service.resume_session(
                 session_ref=session.session_ref,
-                owner_identity_ref="identity:fixture:a",
+                identity_binding_ref=binding.identity_binding_ref,
                 now_epoch=1002,
             )
 
     def test_cr1_c09_rotation_preserves_context_fingerprint(self) -> None:
-        session = self.create_secure()
+        session, binding = self.create_secure()
         rotated = self.service.resume_session(
             session_ref=session.session_ref,
-            owner_identity_ref="identity:fixture:a",
+            identity_binding_ref=binding.identity_binding_ref,
             now_epoch=1001,
         )
         before = (

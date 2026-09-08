@@ -4,7 +4,7 @@ from typing import Protocol, Sequence
 
 from .catalog import CatalogProjection, CommercialQuoteSnapshot, InteractionCart
 from .entry_context import EntryContextAttestation, EntryPurpose, EntryTokenRecord, MerchantContextProjection
-from .identity import ChannelIdentity, ConsentPurpose, ConsentRecord
+from .identity import ChannelIdentity, ChannelSubjectResolution, ConsentPurpose, ConsentRecord, IdentityBindingRecord
 from .order import AuthoritativeOrderConfirmationSnapshot, CanonicalOrderProjection, OrderSubmitRequest, ServiceMode, ServiceModeProjection
 from .payment_experience import CanonicalPaymentRequestProjection
 from .provenance import ConfirmationProvenanceRecord, EvidenceProvenanceRecord, ServerIssuedConfirmation
@@ -207,14 +207,26 @@ class TransportPort(Protocol):
 
 
 class CustomerIdentityPort(Protocol):
-    """Typed customer/Party boundary. Lookup, verification, linking and consent are distinct."""
+    """Typed Channel identity/Party boundary. Caller locators are never identity authority."""
+
+    def resolve_channel_subject(
+        self,
+        *,
+        channel: str,
+        channel_user_ref: str,
+        subject_evidence_ref: str,
+        now_epoch: int,
+    ) -> ChannelSubjectResolution: ...
 
     def resolve_identity(
         self,
         *,
         channel: str,
-        channel_user_ref: str,
+        identity_ref: str,
+        canonical_channel_subject_ref: str,
+        subject_attestation_ref: str,
         conversation_ref: str,
+        candidate_party_refs: tuple[str, ...],
     ) -> ChannelIdentity: ...
 
     def verify_identity(
@@ -222,6 +234,7 @@ class CustomerIdentityPort(Protocol):
         *,
         identity_ref: str,
         verification_evidence_ref: str,
+        now_epoch: int,
     ) -> ChannelIdentity: ...
 
     def link_verified_party(
@@ -230,6 +243,9 @@ class CustomerIdentityPort(Protocol):
         identity_ref: str,
         party_ref: str,
         verification_ref: str,
+        tenant_ref: str | None,
+        merchant_ref: str,
+        context_binding_ref: str,
     ) -> ChannelIdentity: ...
 
     def restrict_identity(self, *, identity_ref: str, restriction_ref: str) -> ChannelIdentity: ...
@@ -240,8 +256,38 @@ class CustomerIdentityPort(Protocol):
         identity_ref: str,
         purpose: ConsentPurpose,
         granted: bool,
+        consent_version: str,
         evidence_ref: str,
         idempotency_key: str,
     ) -> ConsentRecord: ...
 
     def consent_for(self, *, identity_ref: str, purpose: ConsentPurpose) -> ConsentRecord | None: ...
+
+
+class ConsentPolicyPort(Protocol):
+    """Server-governed current consent-policy version source."""
+
+    def current_version(self, purpose: ConsentPurpose) -> str: ...
+
+
+class IdentityBindingStorePort(Protocol):
+    """Server-issued CR3 session identity binding store; in-memory contract in this tranche."""
+
+    def issue_binding(
+        self,
+        *,
+        identity_ref: str,
+        canonical_channel_subject_ref: str,
+        subject_attestation_ref: str,
+        conversation_ref: str,
+        tenant_ref: str | None,
+        merchant_ref: str,
+        location_ref: str,
+        table_ref: str | None,
+        dining_area_ref: str | None,
+        context_binding_ref: str,
+        issued_at_epoch: int,
+        expires_at_epoch: int,
+    ) -> IdentityBindingRecord: ...
+
+    def resolve_binding(self, identity_binding_ref: str) -> IdentityBindingRecord | None: ...

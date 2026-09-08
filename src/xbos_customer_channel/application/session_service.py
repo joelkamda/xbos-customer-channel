@@ -4,7 +4,7 @@ import secrets
 from dataclasses import replace
 
 from ..entry_context import ResolvedEntryContext
-from ..ports import ChannelProvenanceStorePort, CustomerSessionStorePort, XBOSContextPort, XBOSStateReconciliationPort
+from ..ports import ChannelProvenanceStorePort, CustomerSessionStorePort, IdentityBindingStorePort, XBOSContextPort, XBOSStateReconciliationPort
 from ..provenance import binding_matches_session
 from ..session_state import (
     ChannelState,
@@ -78,11 +78,13 @@ class CustomerSessionService:
         reconciliation: XBOSStateReconciliationPort,
         provenance_store: ChannelProvenanceStorePort | None = None,
         xbos_context: XBOSContextPort | None = None,
+        identity_binding_store: IdentityBindingStorePort | None = None,
     ) -> None:
         self._store = store
         self._reconciliation = reconciliation
         self._provenance_store = provenance_store
         self._xbos_context = xbos_context
+        self._identity_binding_store = identity_binding_store
 
     @staticmethod
     def _new_session_ref() -> str:
@@ -122,11 +124,49 @@ class CustomerSessionService:
         if expected != observed:
             raise SessionSecurityRequired("stale_entry_context_rejected")
 
+    def _binding_for_entry_context(
+        self,
+        *,
+        identity_binding_ref: str,
+        conversation_ref: str,
+        entry_context: ResolvedEntryContext,
+        now_epoch: int,
+    ):
+        if self._identity_binding_store is None:
+            raise SessionSecurityRequired("identity_binding_store_required")
+        binding = self._identity_binding_store.resolve_binding(identity_binding_ref)
+        if binding is None:
+            raise SessionSecurityRequired("unknown_identity_binding")
+        if now_epoch >= binding.expires_at_epoch:
+            raise SessionSecurityRequired("identity_binding_expired")
+        if binding.conversation_ref != conversation_ref:
+            raise SessionSecurityRequired("identity_binding_conversation_mismatch")
+        expected = (
+            entry_context.tenant_ref,
+            entry_context.merchant_ref,
+            entry_context.location_ref,
+            entry_context.table_ref,
+            entry_context.dining_area_ref,
+            entry_context.context_binding_ref,
+        )
+        observed = (
+            binding.tenant_ref,
+            binding.merchant_ref,
+            binding.location_ref,
+            binding.table_ref,
+            binding.dining_area_ref,
+            binding.context_binding_ref,
+        )
+        if expected != observed:
+            raise SessionSecurityRequired("identity_binding_context_mismatch")
+        return binding
+
     def create_session(
         self,
         *,
         conversation_ref: str,
         correlation_ref: str,
+        identity_binding_ref: str | None = None,
         owner_identity_ref: str | None = None,
         entry_context: ResolvedEntryContext | None = None,
         now_epoch: int | None = None,
@@ -136,32 +176,46 @@ class CustomerSessionService:
     ) -> CustomerSessionSnapshot:
         """Create a server-issued session.
 
-        ``session_ref``/``entry_token_ref`` remain accepted solely as non-resumable
-        frozen-fixture aliases for XC6 regression compatibility. They never become
-        the server-issued session reference and are not accepted by secure resume.
+        Security-significant sessions accept only a server-issued CR3 identity
+        binding handle. ``owner_identity_ref`` remains in the signature solely so
+        raw caller identity assertions fail closed rather than being mistaken for
+        authority. Historical fixture aliases remain non-resumable.
         """
         actual_ref = self._new_session_ref()
         while self._store.get(actual_ref) is not None:
             actual_ref = self._new_session_ref()
 
-        secure = owner_identity_ref is not None or entry_context is not None or expires_at_epoch is not None
+        secure = (
+            identity_binding_ref is not None
+            or owner_identity_ref is not None
+            or entry_context is not None
+            or expires_at_epoch is not None
+        )
         if secure:
-            if owner_identity_ref is None or entry_context is None or now_epoch is None or expires_at_epoch is None:
+            if owner_identity_ref is not None:
+                raise SessionSecurityRequired("caller_owner_identity_ref_not_authority")
+            if identity_binding_ref is None or entry_context is None or now_epoch is None or expires_at_epoch is None:
                 raise SessionSecurityRequired("secure_session_binding_incomplete")
-            if not owner_identity_ref:
-                raise SessionSecurityRequired("session_owner_identity_required")
             if expires_at_epoch <= now_epoch:
                 raise SessionSecurityRequired("session_expiry_must_be_future")
             if entry_token_ref is not None and entry_token_ref != entry_context.token_ref:
                 raise SessionSecurityRequired("entry_token_binding_mismatch")
             self._assert_entry_context_current(entry_context)
+            binding = self._binding_for_entry_context(
+                identity_binding_ref=identity_binding_ref,
+                conversation_ref=conversation_ref,
+                entry_context=entry_context,
+                now_epoch=now_epoch,
+            )
+            if expires_at_epoch > binding.expires_at_epoch:
+                raise SessionSecurityRequired("session_outlives_identity_binding")
             snapshot = CustomerSessionSnapshot(
                 session_ref=actual_ref,
                 conversation_ref=conversation_ref,
                 correlation_ref=correlation_ref,
                 state=ChannelState.START,
                 entry_token_ref=entry_context.token_ref,
-                owner_identity_ref=owner_identity_ref,
+                owner_identity_ref=binding.identity_ref,
                 tenant_ref=entry_context.tenant_ref,
                 merchant_ref=entry_context.merchant_ref,
                 location_ref=entry_context.location_ref,
@@ -195,16 +249,48 @@ class CustomerSessionService:
         self,
         *,
         session_ref: str,
-        owner_identity_ref: str,
+        identity_binding_ref: str | None = None,
+        owner_identity_ref: str | None = None,
         now_epoch: int,
     ) -> CustomerSessionSnapshot:
+        if owner_identity_ref is not None:
+            raise SessionSecurityRequired("caller_owner_identity_ref_not_authority")
+        if identity_binding_ref is None:
+            raise SessionSecurityRequired("identity_binding_required")
+        if self._identity_binding_store is None:
+            raise SessionSecurityRequired("identity_binding_store_required")
         if self._store.canonical_ref(session_ref) != session_ref:
             raise SessionSecurityRequired("fixture_alias_not_resumable")
         current = self._required(session_ref)
         if not current.security_binding_complete:
             raise SessionSecurityRequired("secure_session_binding_required")
-        if current.owner_identity_ref != owner_identity_ref:
+        binding = self._identity_binding_store.resolve_binding(identity_binding_ref)
+        if binding is None:
+            raise SessionSecurityRequired("unknown_identity_binding")
+        if now_epoch >= binding.expires_at_epoch:
+            raise SessionSecurityRequired("identity_binding_expired")
+        if binding.identity_ref != current.owner_identity_ref:
             raise PermissionError("session_owner_mismatch")
+        if binding.conversation_ref != current.conversation_ref:
+            raise SessionSecurityRequired("identity_binding_conversation_mismatch")
+        bound_identity_context = (
+            current.tenant_ref,
+            current.merchant_ref,
+            current.location_ref,
+            current.table_ref,
+            current.dining_area_ref,
+            current.context_binding_ref,
+        )
+        observed_identity_context = (
+            binding.tenant_ref,
+            binding.merchant_ref,
+            binding.location_ref,
+            binding.table_ref,
+            binding.dining_area_ref,
+            binding.context_binding_ref,
+        )
+        if bound_identity_context != observed_identity_context:
+            raise SessionSecurityRequired("identity_binding_context_mismatch")
         if current.expires_at_epoch is None or now_epoch >= current.expires_at_epoch:
             raise PermissionError("session_expired")
         if current.invalidated_at_epoch is not None or current.rotated_to_session_ref is not None:
@@ -256,7 +342,7 @@ class CustomerSessionService:
         )
         rotated = self._store.rotate_if_active(
             session_ref=current.session_ref,
-            expected_owner_identity_ref=owner_identity_ref,
+            expected_owner_identity_ref=current.owner_identity_ref or "",
             now_epoch=now_epoch,
             replacement=replacement,
         )
