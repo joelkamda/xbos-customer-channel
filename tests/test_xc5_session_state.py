@@ -12,6 +12,7 @@ from xbos_customer_channel.application.session_service import (
     InvalidChannelTransition,
     SessionReconciliationRequired,
 )
+from xbos_customer_channel.persistence.provenance_records import InMemoryChannelProvenanceStore
 from xbos_customer_channel.persistence.session_records import InMemoryCustomerSessionStore
 from xbos_customer_channel.session_state import (
     ChannelState,
@@ -28,7 +29,12 @@ class XC5SessionStateTests(unittest.TestCase):
     def setUp(self) -> None:
         self.store = InMemoryCustomerSessionStore()
         self.reconcile = FakeXBOSStateReconciliationClient()
-        self.service = CustomerSessionService(store=self.store, reconciliation=self.reconcile)
+        self.provenance = InMemoryChannelProvenanceStore()
+        self.service = CustomerSessionService(
+            store=self.store,
+            reconciliation=self.reconcile,
+            provenance_store=self.provenance,
+        )
         self.session = self.service.create_session(
             session_ref="sess_fixture_1",
             conversation_ref="conv_fixture_1",
@@ -61,6 +67,12 @@ class XC5SessionStateTests(unittest.TestCase):
         values.update(overrides)
         return UpstreamStateProjection(**values)
 
+
+    def register_projection(self, projection: UpstreamStateProjection) -> None:
+        current = self.store.get(self.session.session_ref)
+        assert current is not None
+        self.reconcile.register(current, projection)
+
     def test_interaction_states_follow_explicit_transition_matrix(self) -> None:
         self.move_to_review()
         current = self.store.get(self.session.session_ref)
@@ -79,29 +91,29 @@ class XC5SessionStateTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(second.transition_count, 1)
 
-    def test_order_created_projection_requires_typed_upstream_evidence(self) -> None:
+    def test_order_created_projection_requires_server_resolved_evidence(self) -> None:
         self.move_to_review()
         self.service.transition(self.session.session_ref, ChannelState.ORDER_SUBMITTING, idempotency_key="submit")
-        with self.assertRaisesRegex(AuthoritativeEvidenceRequired, "order_created"):
+        with self.assertRaisesRegex(AuthoritativeEvidenceRequired, "server_side_authoritative_evidence_required"):
             self.service.transition(self.session.session_ref, ChannelState.ORDER_CREATED, idempotency_key="created")
 
-    def test_order_created_projection_accepts_matching_xbos_evidence_only(self) -> None:
+    def test_order_created_projection_accepts_matching_server_resolved_xbos_evidence_only(self) -> None:
         self.move_to_review()
         self.service.transition(self.session.session_ref, ChannelState.ORDER_SUBMITTING, idempotency_key="submit")
+        self.register_projection(self.order_projection())
         current = self.service.transition(
             self.session.session_ref,
             ChannelState.ORDER_CREATED,
             idempotency_key="created",
-            upstream_evidence=self.order_projection(),
         )
         self.assertEqual(current.state, ChannelState.ORDER_CREATED)
         self.assertEqual(current.order_ref, "order_fixture_1")
         self.assertEqual(current.last_upstream_evidence_ref, "evidence_order_1")
 
-    def test_cross_correlation_upstream_evidence_is_rejected(self) -> None:
+    def test_caller_supplied_typed_upstream_evidence_is_not_authority(self) -> None:
         self.move_to_review()
         self.service.transition(self.session.session_ref, ChannelState.ORDER_SUBMITTING, idempotency_key="submit")
-        with self.assertRaisesRegex(AuthoritativeEvidenceRequired, "correlation_mismatch"):
+        with self.assertRaisesRegex(AuthoritativeEvidenceRequired, "caller_supplied_upstream_projection_not_authority"):
             self.service.transition(
                 self.session.session_ref,
                 ChannelState.ORDER_CREATED,
@@ -117,11 +129,12 @@ class XC5SessionStateTests(unittest.TestCase):
         )
         self.move_to_review()
         self.service.transition(self.session.session_ref, ChannelState.ORDER_SUBMITTING, idempotency_key="submit")
-        self.service.transition(self.session.session_ref, ChannelState.ORDER_CREATED, idempotency_key="created", upstream_evidence=evidence)
+        self.register_projection(evidence)
+        self.service.transition(self.session.session_ref, ChannelState.ORDER_CREATED, idempotency_key="created")
         self.service.transition(self.session.session_ref, ChannelState.PAYMENT_METHOD, idempotency_key="method")
-        self.service.transition(self.session.session_ref, ChannelState.PAYMENT_PENDING, idempotency_key="pending", upstream_evidence=evidence)
+        self.service.transition(self.session.session_ref, ChannelState.PAYMENT_PENDING, idempotency_key="pending")
         with self.assertRaisesRegex(AuthoritativeEvidenceRequired, "paid_requires"):
-            self.service.transition(self.session.session_ref, ChannelState.PAID, idempotency_key="paid", upstream_evidence=evidence)
+            self.service.transition(self.session.session_ref, ChannelState.PAID, idempotency_key="paid")
 
     def test_paid_label_requires_paid_commercial_projection(self) -> None:
         pending = self.order_projection(
@@ -136,10 +149,12 @@ class XC5SessionStateTests(unittest.TestCase):
         )
         self.move_to_review()
         self.service.transition(self.session.session_ref, ChannelState.ORDER_SUBMITTING, idempotency_key="submit")
-        self.service.transition(self.session.session_ref, ChannelState.ORDER_CREATED, idempotency_key="created", upstream_evidence=pending)
+        self.register_projection(pending)
+        self.service.transition(self.session.session_ref, ChannelState.ORDER_CREATED, idempotency_key="created")
         self.service.transition(self.session.session_ref, ChannelState.PAYMENT_METHOD, idempotency_key="method")
-        self.service.transition(self.session.session_ref, ChannelState.PAYMENT_PENDING, idempotency_key="pending", upstream_evidence=pending)
-        current = self.service.transition(self.session.session_ref, ChannelState.PAID, idempotency_key="paid", upstream_evidence=paid)
+        self.service.transition(self.session.session_ref, ChannelState.PAYMENT_PENDING, idempotency_key="pending")
+        self.register_projection(paid)
+        current = self.service.transition(self.session.session_ref, ChannelState.PAID, idempotency_key="paid")
         self.assertEqual(current.state, ChannelState.PAID)
         self.assertEqual(current.payment_ref, "pay_fixture_1")
 
@@ -152,7 +167,7 @@ class XC5SessionStateTests(unittest.TestCase):
             last_upstream_evidence_ref="old_evidence",
         )
         self.assertEqual(stale.state, ChannelState.PAID)
-        self.reconcile.register(
+        self.register_projection(
             self.order_projection(
                 evidence_ref="fresh_pending",
                 payment_ref="pay_fixture_1",
@@ -178,7 +193,7 @@ class XC5SessionStateTests(unittest.TestCase):
             state=ChannelState.ORDER_CREATED,
             order_ref="order_fixture_1",
         )
-        self.reconcile.register(self.order_projection(evidence_ref="fresh_order"))
+        self.register_projection(self.order_projection(evidence_ref="fresh_order"))
         recovered = self.service.reenter(self.session.session_ref)
         self.assertEqual(recovered.session_ref, "sess_fixture_1")
         self.assertEqual(recovered.conversation_ref, "conv_fixture_1")
@@ -228,7 +243,7 @@ class XC5SessionStateTests(unittest.TestCase):
             state=ChannelState.ORDER_CREATED,
             order_ref="order_fixture_1",
         )
-        self.reconcile.register(
+        self.register_projection(
             self.order_projection(
                 evidence_ref="cancel_evidence",
                 order_state=UpstreamOrderState.CANCELED,

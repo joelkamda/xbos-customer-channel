@@ -13,7 +13,13 @@ from ..order import (
     ServiceMode,
     ServiceModeUnavailable,
 )
-from ..ports import CustomerSessionStorePort, XBOSOrderPort
+from ..ports import ChannelProvenanceStorePort, CustomerSessionStorePort, XBOSOrderPort
+from ..provenance import (
+    ProvenanceConflict,
+    ServerIssuedConfirmation,
+    binding_matches_session,
+    confirmation_commercial_fingerprint,
+)
 from ..session_state import ChannelState, UpstreamOrderState, UpstreamStateProjection
 from .session_service import CustomerSessionService, InvalidChannelTransition
 
@@ -32,23 +38,29 @@ class OrderDraftConfirmationService:
         order_port: XBOSOrderPort,
         sessions: CustomerSessionService,
         session_store: CustomerSessionStorePort,
+        provenance_store: ChannelProvenanceStorePort,
     ) -> None:
         self._catalog = catalog
         self._orders = order_port
         self._sessions = sessions
         self._session_store = session_store
+        self._provenance = provenance_store
 
     def prepare_confirmation(
         self,
         *,
+        session_ref: str,
         catalog_session: CatalogSession,
         service_mode: ServiceMode,
         now_epoch: int,
         acknowledged_quote_ref: str | None = None,
         contact_ref: str | None = None,
         delivery_address_ref: str | None = None,
-    ) -> AuthoritativeOrderConfirmationSnapshot:
+    ) -> ServerIssuedConfirmation:
         entry = catalog_session.entry
+        session = self._require_active_secure_session(session_ref, now_epoch=now_epoch)
+        self._assert_session_matches_entry(session, catalog_session)
+
         if service_mode.value not in entry.projection.allowed_fulfillment_modes:
             raise ServiceModeUnavailable("service_mode_not_allowed_by_xbos_context")
 
@@ -92,18 +104,45 @@ class OrderDraftConfirmationService:
             currency=accepted_quote.currency,
             service_mode=service_mode,
         )
-        return confirmation
+        return self._provenance.issue_confirmation(session=session, confirmation=confirmation)
 
     def submit(
         self,
         *,
         session_ref: str,
-        confirmation: AuthoritativeOrderConfirmationSnapshot,
+        confirmation_handle_ref: str,
         client_submit_ref: str,
+        now_epoch: int,
     ) -> CanonicalOrderProjection:
-        session = self._session_store.get(session_ref)
-        if session is None:
-            raise KeyError(session_ref)
+        session = self._require_active_secure_session(session_ref, now_epoch=now_epoch)
+        record = self._provenance.resolve_confirmation(confirmation_handle_ref)
+        if record is None:
+            raise OrderConfirmationRejected("unknown_server_confirmation_handle")
+        if not binding_matches_session(record.binding, session):
+            raise OrderConfirmationRejected("confirmation_session_context_mismatch")
+
+        authoritative = self._orders.resolve_order_confirmation(record.authoritative_xbos_confirmation_ref)
+        if authoritative is None:
+            raise OrderConfirmationRejected("authoritative_confirmation_unavailable")
+        if authoritative.expires_at_epoch <= now_epoch:
+            raise OrderConfirmationRejected("authoritative_confirmation_expired")
+        if confirmation_commercial_fingerprint(authoritative) != record.commercial_fingerprint:
+            raise OrderConfirmationRejected("authoritative_confirmation_material_changed")
+        if (
+            authoritative.quote_ref != record.quote_ref
+            or authoritative.quote_version != record.quote_version
+            or authoritative.service_context_ref != record.service_context_ref
+            or authoritative.service_mode is not record.service_mode
+        ):
+            raise OrderConfirmationRejected("authoritative_confirmation_record_mismatch")
+
+        try:
+            self._provenance.claim_confirmation(
+                confirmation_handle_ref=confirmation_handle_ref,
+                client_submit_ref=client_submit_ref,
+            )
+        except (KeyError, ProvenanceConflict) as exc:
+            raise OrderSubmissionConflict(str(exc)) from None
 
         if session.state is ChannelState.REVIEW:
             self._sessions.transition(
@@ -119,7 +158,7 @@ class OrderDraftConfirmationService:
         request = OrderSubmitRequest(
             client_submit_ref=client_submit_ref,
             correlation_ref=session.correlation_ref,
-            confirmation_ref=confirmation.confirmation_ref,
+            confirmation_ref=record.authoritative_xbos_confirmation_ref,
         )
 
         try:
@@ -145,7 +184,7 @@ class OrderDraftConfirmationService:
         evidence = UpstreamStateProjection(
             evidence_ref=order.evidence_ref,
             correlation_ref=order.correlation_ref,
-            observed_at_epoch=0,
+            observed_at_epoch=now_epoch,
             order_ref=order.order_ref,
             order_state=(
                 UpstreamOrderState.CONFIRMED
@@ -153,13 +192,34 @@ class OrderDraftConfirmationService:
                 else UpstreamOrderState.CREATED
             ),
         )
+        evidence_handle_ref = self._provenance.issue_evidence(session=latest, projection=evidence)
         self._sessions.transition(
             session_ref,
             ChannelState.ORDER_CREATED,
             idempotency_key=f"xc6-submit-result:{client_submit_ref}",
-            upstream_evidence=evidence,
+            evidence_handle_ref=evidence_handle_ref,
         )
         return order
+
+    def _require_active_secure_session(self, session_ref: str, *, now_epoch: int):
+        try:
+            return self._sessions.validate_active_session(session_ref=session_ref, now_epoch=now_epoch)
+        except (PermissionError, RuntimeError, ValueError) as exc:
+            raise OrderConfirmationRejected(str(exc)) from None
+
+    @staticmethod
+    def _assert_session_matches_entry(session, catalog_session: CatalogSession) -> None:
+        entry = catalog_session.entry
+        if (session.merchant_ref, session.location_ref) != (entry.merchant_ref, entry.location_ref):
+            raise OrderConfirmationRejected("session_entry_merchant_location_mismatch")
+        if session.table_ref != entry.table_ref:
+            raise OrderConfirmationRejected("session_entry_table_mismatch")
+        if session.dining_area_ref != entry.dining_area_ref:
+            raise OrderConfirmationRejected("session_entry_dining_area_mismatch")
+        if session.entry_purpose is not entry.purpose:
+            raise OrderConfirmationRejected("session_entry_purpose_mismatch")
+        if session.context_binding_ref != entry.context_binding_ref:
+            raise OrderConfirmationRejected("session_entry_context_binding_mismatch")
 
     @staticmethod
     def _assert_confirmation_matches_authority(

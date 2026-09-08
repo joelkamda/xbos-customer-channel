@@ -7,6 +7,7 @@ from .entry_context import EntryContextAttestation, EntryPurpose, EntryTokenReco
 from .identity import ChannelIdentity, ConsentPurpose, ConsentRecord
 from .order import AuthoritativeOrderConfirmationSnapshot, CanonicalOrderProjection, OrderSubmitRequest, ServiceMode, ServiceModeProjection
 from .payment_experience import CanonicalPaymentRequestProjection
+from .provenance import ConfirmationProvenanceRecord, EvidenceProvenanceRecord, ServerIssuedConfirmation
 from .order_lifecycle import (
     CancellationDecision,
     CancellationRequest,
@@ -108,6 +109,7 @@ class XBOSOrderPort(Protocol):
         now_epoch: int,
     ) -> AuthoritativeOrderConfirmationSnapshot: ...
 
+    def resolve_order_confirmation(self, confirmation_ref: str) -> AuthoritativeOrderConfirmationSnapshot | None: ...
     def submit_order(self, request: OrderSubmitRequest) -> CanonicalOrderProjection: ...
     def get_order_by_client_ref(self, client_submit_ref: str) -> CanonicalOrderProjection | None: ...
 
@@ -161,6 +163,35 @@ class XBOSStateReconciliationPort(Protocol):
     """Typed state projection boundary. Real adapter remains blocked until the customer-safe facade freezes."""
 
     def reconcile_session(self, session: CustomerSessionSnapshot) -> UpstreamStateProjection | None: ...
+
+
+class ChannelProvenanceStorePort(Protocol):
+    """Server-owned CR2 provenance handles; in-memory contract until composed durability gate."""
+
+    def issue_evidence(
+        self,
+        *,
+        session: CustomerSessionSnapshot,
+        projection: UpstreamStateProjection,
+    ) -> str: ...
+
+    def resolve_evidence(self, evidence_handle_ref: str) -> EvidenceProvenanceRecord | None: ...
+
+    def issue_confirmation(
+        self,
+        *,
+        session: CustomerSessionSnapshot,
+        confirmation: AuthoritativeOrderConfirmationSnapshot,
+    ) -> ServerIssuedConfirmation: ...
+
+    def resolve_confirmation(self, confirmation_handle_ref: str) -> ConfirmationProvenanceRecord | None: ...
+
+    def claim_confirmation(
+        self,
+        *,
+        confirmation_handle_ref: str,
+        client_submit_ref: str,
+    ) -> ConfirmationProvenanceRecord: ...
 
 
 class PaymentPort(Protocol):

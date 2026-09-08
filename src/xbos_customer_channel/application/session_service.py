@@ -4,7 +4,8 @@ import secrets
 from dataclasses import replace
 
 from ..entry_context import ResolvedEntryContext
-from ..ports import CustomerSessionStorePort, XBOSContextPort, XBOSStateReconciliationPort
+from ..ports import ChannelProvenanceStorePort, CustomerSessionStorePort, XBOSContextPort, XBOSStateReconciliationPort
+from ..provenance import binding_matches_session
 from ..session_state import (
     ChannelState,
     CustomerSessionSnapshot,
@@ -75,10 +76,12 @@ class CustomerSessionService:
         *,
         store: CustomerSessionStorePort,
         reconciliation: XBOSStateReconciliationPort,
+        provenance_store: ChannelProvenanceStorePort | None = None,
         xbos_context: XBOSContextPort | None = None,
     ) -> None:
         self._store = store
         self._reconciliation = reconciliation
+        self._provenance_store = provenance_store
         self._xbos_context = xbos_context
 
     @staticmethod
@@ -261,6 +264,56 @@ class CustomerSessionService:
             raise PermissionError("session_stale_or_rotated")
         return rotated
 
+    def validate_active_session(
+        self,
+        *,
+        session_ref: str,
+        now_epoch: int,
+    ) -> CustomerSessionSnapshot:
+        """Revalidate the active CR1 session/context binding before sensitive use."""
+        current = self._required(session_ref)
+        if not current.security_binding_complete:
+            raise SessionSecurityRequired("secure_session_binding_required")
+        if current.invalidated_at_epoch is not None or current.rotated_to_session_ref is not None:
+            raise PermissionError("session_stale_or_rotated")
+        if current.expires_at_epoch is None or now_epoch >= current.expires_at_epoch:
+            raise PermissionError("session_expired")
+        if self._xbos_context is None:
+            raise SessionSecurityRequired("xbos_context_reattestation_required")
+        if current.merchant_ref is None or current.location_ref is None or current.entry_purpose is None:
+            raise SessionSecurityRequired("bound_context_incomplete")
+        try:
+            attestation = self._xbos_context.attest_context(
+                merchant_ref=current.merchant_ref,
+                location_ref=current.location_ref,
+                table_ref=current.table_ref,
+                purpose=current.entry_purpose,
+                dining_area_ref=current.dining_area_ref,
+            )
+        except (KeyError, PermissionError, ValueError):
+            raise SessionSecurityRequired("entry_context_unavailable") from None
+        bound = (
+            current.tenant_ref,
+            current.merchant_ref,
+            current.location_ref,
+            current.table_ref,
+            current.dining_area_ref,
+            current.entry_purpose,
+            current.context_binding_ref,
+        )
+        observed = (
+            attestation.tenant_ref,
+            attestation.merchant_ref,
+            attestation.location_ref,
+            attestation.table_ref,
+            attestation.dining_area_ref,
+            attestation.purpose,
+            attestation.context_binding_ref,
+        )
+        if bound != observed:
+            raise SessionSecurityRequired("stale_entry_context_rejected")
+        return current
+
     def attach_interaction_refs(
         self,
         session_ref: str,
@@ -277,6 +330,7 @@ class CustomerSessionService:
         target: ChannelState,
         *,
         idempotency_key: str,
+        evidence_handle_ref: str | None = None,
         upstream_evidence: UpstreamStateProjection | None = None,
         human_handoff_ref: str | None = None,
     ) -> CustomerSessionSnapshot:
@@ -291,17 +345,22 @@ class CustomerSessionService:
         if target not in allowed:
             raise InvalidChannelTransition(f"invalid_transition:{current.state.value}->{target.value}")
 
+        if upstream_evidence is not None:
+            raise AuthoritativeEvidenceRequired("caller_supplied_upstream_projection_not_authority")
+
         order_ref = current.order_ref
         payment_ref = current.payment_ref
         evidence_ref = current.last_upstream_evidence_ref
         if target in self._EVIDENCE_GATED:
-            if upstream_evidence is None:
-                raise AuthoritativeEvidenceRequired(f"upstream_evidence_required:{target.value}")
-            self._assert_evidence_matches_session(current, upstream_evidence)
-            self._assert_projection_supports(target, upstream_evidence)
-            order_ref = upstream_evidence.order_ref or order_ref
-            payment_ref = upstream_evidence.payment_ref or payment_ref
-            evidence_ref = upstream_evidence.evidence_ref
+            projection = self._resolve_authoritative_projection(
+                current,
+                evidence_handle_ref=evidence_handle_ref,
+            )
+            self._assert_evidence_matches_session(current, projection)
+            self._assert_projection_supports(target, projection)
+            order_ref = projection.order_ref or order_ref
+            payment_ref = projection.payment_ref or payment_ref
+            evidence_ref = projection.evidence_ref
 
         updated = replace(
             current,
@@ -314,6 +373,27 @@ class CustomerSessionService:
         )
         self._store.put(updated)
         return self._store.record_idempotent_result(session_ref, idempotency_key, updated)
+
+    def _resolve_authoritative_projection(
+        self,
+        session: CustomerSessionSnapshot,
+        *,
+        evidence_handle_ref: str | None,
+    ) -> UpstreamStateProjection:
+        if evidence_handle_ref is not None:
+            if self._provenance_store is None:
+                raise AuthoritativeEvidenceRequired("server_provenance_store_required")
+            record = self._provenance_store.resolve_evidence(evidence_handle_ref)
+            if record is None:
+                raise AuthoritativeEvidenceRequired("unknown_server_evidence_handle")
+            if not binding_matches_session(record.binding, session):
+                raise AuthoritativeEvidenceRequired("server_evidence_session_context_mismatch")
+            return record.projection
+
+        projection = self._reconciliation.reconcile_session(session)
+        if projection is None:
+            raise AuthoritativeEvidenceRequired("server_side_authoritative_evidence_required")
+        return projection
 
     def reenter(self, session_ref: str) -> CustomerSessionSnapshot:
         """Business-state reconciliation only; secure owner/session resume is ``resume_session``."""
