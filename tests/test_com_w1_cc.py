@@ -178,6 +178,16 @@ class W1ConversationTests(unittest.TestCase):
         added = self.router.route(session=self.session, catalog_session=quantity.catalog_session, navigation=quantity.navigation, inbound=inbound_action("add"))
         self.assertEqual(added.catalog_session.cart.lines[0].quantity, 2)
         self.assertEqual(added.catalog_session.cart.lines[0].item_ref, item_ref)
+        self.assertIn("cart", {button.reply_id for button in added.rendered.buttons})
+
+    def test_u1_runtime_composition_has_no_hardwired_fake_domain_clients(self) -> None:
+        app_root = Path(__file__).resolve().parents[1] / "src" / "xbos_customer_channel" / "application"
+        source = "\n".join(
+            (app_root / name).read_text(encoding="utf-8")
+            for name in ("w1_composition.py", "w1_whatsapp_runtime.py", "w1_conversation.py")
+        )
+        self.assertNotIn("FakeXBOSOrderClient", source)
+        self.assertNotIn("FakeXBOSPaymentRequestClient", source)
 
     def test_help_back_restart_and_unsupported_are_safe(self) -> None:
         for action in ("help", "back", "restart", "unknown"):
