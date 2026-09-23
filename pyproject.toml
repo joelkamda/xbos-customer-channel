@@ -3,7 +3,11 @@ name = "xbos-customer-channel"
 version = "0.1.0"
 description = "Transport-agnostic XBOS customer-channel application core"
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "fastapi==0.115.12",
+    "uvicorn==0.34.2",
+    "httpx==0.28.1",
+]
 
 [tool.setuptools]
 package-dir = {"" = "src"}
