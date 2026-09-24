@@ -645,4 +645,3 @@ class H1S4DurableRuntimeStatePortTests(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
-\n

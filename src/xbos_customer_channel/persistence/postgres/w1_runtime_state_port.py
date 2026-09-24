@@ -403,4 +403,3 @@ def _purge_after(expires_at_epoch: int | None) -> datetime:
         raise SecureRuntimeSessionRequired("session_expiry_required")
     return _from_epoch(expires_at_epoch) + timedelta(days=7)
 
-\n
