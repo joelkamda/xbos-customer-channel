@@ -11,8 +11,11 @@ sys.path.insert(0, str(ROOT / "src"))
 from xbos_customer_channel.entry_context import EntryPurpose
 from xbos_customer_channel.session_state import ChannelState, CustomerSessionSnapshot
 from xbos_customer_channel.persistence.postgres.security_state_stores import (
+    ActiveIdentityBindingAmbiguous,
+    ActiveSessionAmbiguous,
     PostgresCustomerSessionStore,
     PostgresEntryTokenStore,
+    PostgresIdentityBindingStore,
     PostgresProvenanceStore,
     ProvenanceHandleConflict,
 )
@@ -68,6 +71,55 @@ def replacement_session() -> CustomerSessionSnapshot:
         predecessor_session_ref="session-1",
         security_binding_complete=True,
     )
+
+
+def active_session_row(session_ref="session-1"):
+    return {
+        "session_ref": session_ref,
+        "conversation_ref": "conversation-1",
+        "correlation_ref": "correlation-1",
+        "state": "browsing",
+        "entry_token_ref": "token-1",
+        "owner_identity_ref": "identity-1",
+        "tenant_ref": "tenant-1",
+        "merchant_ref": "merchant-1",
+        "location_ref": "location-1",
+        "table_ref": None,
+        "dining_area_ref": None,
+        "entry_purpose": "takeaway",
+        "context_binding_ref": "context-1",
+        "created_at_utc": datetime.fromtimestamp(100, timezone.utc),
+        "expires_at_utc": datetime.fromtimestamp(1000, timezone.utc),
+        "generation": 1,
+        "predecessor_session_ref": None,
+        "rotated_to_session_ref": None,
+        "invalidated_at_utc": None,
+        "cart_ref": None,
+        "quote_ref": None,
+        "order_ref": None,
+        "payment_ref": None,
+        "last_upstream_evidence_ref": None,
+        "human_handoff_ref": None,
+        "transition_count": 0,
+    }
+
+
+def identity_binding_row(binding_ref="binding-1"):
+    return {
+        "identity_binding_ref": binding_ref,
+        "identity_ref": "identity-1",
+        "canonical_channel_subject_ref": "subject-1",
+        "subject_attestation_ref": "attestation-1",
+        "conversation_ref": "conversation-1",
+        "tenant_ref": "tenant-1",
+        "merchant_ref": "merchant-1",
+        "location_ref": "location-1",
+        "table_ref": None,
+        "dining_area_ref": None,
+        "context_binding_ref": "context-1",
+        "issued_at_utc": datetime.fromtimestamp(100, timezone.utc),
+        "expires_at_utc": datetime.fromtimestamp(1000, timezone.utc),
+    }
 
 
 class H1S3SecurityStateStoreTests(unittest.TestCase):
@@ -141,6 +193,63 @@ class H1S3SecurityStateStoreTests(unittest.TestCase):
         )
         self.assertIsNone(result)
         self.assertEqual(len(cursor.executed), 1)
+
+    def test_active_session_lookup_returns_exactly_one_unbound_snapshot(self) -> None:
+        cursor = FakeCursor([active_session_row(), None])
+        store = PostgresCustomerSessionStore(lambda: FakeConnection(cursor))
+        result = store.resolve_active_for_conversation(
+            "conversation-1",
+            now_utc=datetime.fromtimestamp(500, timezone.utc),
+        )
+        self.assertIsNotNone(result)
+        self.assertEqual(result.session_ref, "session-1")
+        self.assertFalse(result.security_binding_complete)
+        sql = cursor.executed[0][0]
+        self.assertIn("invalidated_at_utc IS NULL", sql)
+        self.assertIn("rotated_to_session_ref IS NULL", sql)
+        self.assertIn("expires_at_utc > %s", sql)
+        self.assertIn("LIMIT 2", sql)
+
+    def test_active_session_lookup_fails_closed_on_ambiguity(self) -> None:
+        cursor = FakeCursor([
+            active_session_row("session-2"),
+            active_session_row("session-1"),
+        ])
+        store = PostgresCustomerSessionStore(lambda: FakeConnection(cursor))
+        with self.assertRaises(ActiveSessionAmbiguous):
+            store.resolve_active_for_conversation(
+                "conversation-1",
+                now_utc=datetime.fromtimestamp(500, timezone.utc),
+            )
+
+    def test_active_identity_binding_lookup_matches_session_context(self) -> None:
+        cursor = FakeCursor([identity_binding_row(), None])
+        store = PostgresIdentityBindingStore(lambda: FakeConnection(cursor))
+        session = replacement_session()
+        result = store.resolve_active_for_session_context(
+            session,
+            now_utc=datetime.fromtimestamp(500, timezone.utc),
+        )
+        self.assertIsNotNone(result)
+        self.assertEqual(result.identity_ref, "identity-1")
+        sql = cursor.executed[0][0]
+        self.assertIn("identity_ref = %s", sql)
+        self.assertIn("conversation_ref = %s", sql)
+        self.assertIn("IS NOT DISTINCT FROM", sql)
+        self.assertIn("expires_at_utc > %s", sql)
+        self.assertIn("LIMIT 2", sql)
+
+    def test_active_identity_binding_lookup_fails_closed_on_ambiguity(self) -> None:
+        cursor = FakeCursor([
+            identity_binding_row("binding-2"),
+            identity_binding_row("binding-1"),
+        ])
+        store = PostgresIdentityBindingStore(lambda: FakeConnection(cursor))
+        with self.assertRaises(ActiveIdentityBindingAmbiguous):
+            store.resolve_active_for_session_context(
+                replacement_session(),
+                now_utc=datetime.fromtimestamp(500, timezone.utc),
+            )
 
 
 if __name__ == "__main__":

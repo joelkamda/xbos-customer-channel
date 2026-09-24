@@ -25,6 +25,14 @@ class ProvenanceHandleConflict(SecurityStateConflict):
     pass
 
 
+class ActiveSessionAmbiguous(SecurityStateConflict):
+    pass
+
+
+class ActiveIdentityBindingAmbiguous(SecurityStateConflict):
+    pass
+
+
 @dataclass(frozen=True, slots=True)
 class DurableProvenanceHandle:
     provenance_handle_ref: str
@@ -142,6 +150,38 @@ class PostgresCustomerSessionStore:
             row,
             security_binding_complete=security_binding_complete,
         )
+
+    def resolve_active_for_conversation(
+        self,
+        conversation_ref: str,
+        *,
+        now_utc: datetime,
+    ) -> CustomerSessionSnapshot | None:
+        """Return exactly one active session or fail closed on ambiguity."""
+
+        now = _utc(now_utc)
+        with transaction(self._connection_factory) as connection:
+            with connection.cursor(row_factory=dict_row) as cursor:
+                cursor.execute(
+                    """
+                    SELECT *
+                    FROM channel_session
+                    WHERE conversation_ref = %s
+                      AND invalidated_at_utc IS NULL
+                      AND rotated_to_session_ref IS NULL
+                      AND expires_at_utc > %s
+                    ORDER BY generation DESC, created_at_utc DESC
+                    LIMIT 2
+                    """,
+                    (conversation_ref, now),
+                )
+                first = cursor.fetchone()
+                second = cursor.fetchone()
+        if second is not None:
+            raise ActiveSessionAmbiguous("active_session_state_ambiguous")
+        if first is None:
+            return None
+        return _session_from_row(first, security_binding_complete=False)
 
     def rotate_if_active(
         self,
@@ -342,6 +382,76 @@ class PostgresIdentityBindingStore:
             context_binding_ref=row["context_binding_ref"],
             issued_at_epoch=_to_epoch(row["issued_at_utc"]),
             expires_at_epoch=_to_epoch(row["expires_at_utc"]),
+        )
+
+    def resolve_active_for_session_context(
+        self,
+        session: CustomerSessionSnapshot,
+        *,
+        now_utc: datetime,
+    ) -> IdentityBindingRecord | None:
+        """Re-establish one unexpired binding for the durable session context."""
+
+        if (
+            session.owner_identity_ref is None
+            or session.merchant_ref is None
+            or session.location_ref is None
+            or session.context_binding_ref is None
+        ):
+            return None
+        now = _utc(now_utc)
+        with transaction(self._connection_factory) as connection:
+            with connection.cursor(row_factory=dict_row) as cursor:
+                cursor.execute(
+                    """
+                    SELECT *
+                    FROM channel_identity_binding
+                    WHERE identity_ref = %s
+                      AND conversation_ref = %s
+                      AND tenant_ref IS NOT DISTINCT FROM %s
+                      AND merchant_ref = %s
+                      AND location_ref = %s
+                      AND table_ref IS NOT DISTINCT FROM %s
+                      AND dining_area_ref IS NOT DISTINCT FROM %s
+                      AND context_binding_ref = %s
+                      AND expires_at_utc > %s
+                    ORDER BY issued_at_utc DESC, identity_binding_ref
+                    LIMIT 2
+                    """,
+                    (
+                        session.owner_identity_ref,
+                        session.conversation_ref,
+                        session.tenant_ref,
+                        session.merchant_ref,
+                        session.location_ref,
+                        session.table_ref,
+                        session.dining_area_ref,
+                        session.context_binding_ref,
+                        now,
+                    ),
+                )
+                first = cursor.fetchone()
+                second = cursor.fetchone()
+        if second is not None:
+            raise ActiveIdentityBindingAmbiguous(
+                "active_identity_binding_ambiguous"
+            )
+        if first is None:
+            return None
+        return IdentityBindingRecord(
+            identity_binding_ref=first["identity_binding_ref"],
+            identity_ref=first["identity_ref"],
+            canonical_channel_subject_ref=first["canonical_channel_subject_ref"],
+            subject_attestation_ref=first["subject_attestation_ref"],
+            conversation_ref=first["conversation_ref"],
+            tenant_ref=first["tenant_ref"],
+            merchant_ref=first["merchant_ref"],
+            location_ref=first["location_ref"],
+            table_ref=first["table_ref"],
+            dining_area_ref=first["dining_area_ref"],
+            context_binding_ref=first["context_binding_ref"],
+            issued_at_epoch=_to_epoch(first["issued_at_utc"]),
+            expires_at_epoch=_to_epoch(first["expires_at_utc"]),
         )
 
 
