@@ -13,6 +13,7 @@ class RuntimeConfig:
 
     meta: MetaWhatsAppConfig
     xbos_private_base_url: str
+    xbos_catalog_adapter: str
 
     @classmethod
     def from_environment(cls, environ: Mapping[str, str] | None = None) -> "RuntimeConfig":
@@ -28,7 +29,15 @@ class RuntimeConfig:
         if not xbos_base_url or not xbos_base_url.startswith(("http://", "https://")):
             raise ValueError("invalid_customer_channel_xbos_private_base_url")
 
+        catalog_adapter = source.get(
+            "XAFPAY_CUSTOMER_CHANNEL_XBOS_CATALOG_ADAPTER",
+            "fake",
+        ).strip().lower()
+        if catalog_adapter not in {"fake", "real"}:
+            raise ValueError("invalid_customer_channel_xbos_catalog_adapter")
+
         return cls(
             meta=meta,
             xbos_private_base_url=xbos_base_url.rstrip("/"),
+            xbos_catalog_adapter=catalog_adapter,
         )
