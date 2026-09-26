@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import secrets
 from dataclasses import replace
+from datetime import datetime, timezone
 
 from ..entry_context import ResolvedEntryContext
 from ..ports import ChannelProvenanceStorePort, CustomerSessionStorePort, IdentityBindingStorePort, XBOSContextPort, XBOSStateReconciliationPort
@@ -90,19 +91,63 @@ class CustomerSessionService:
     def _new_session_ref() -> str:
         return "sess_" + secrets.token_urlsafe(32)
 
-    def _assert_entry_context_current(self, entry_context: ResolvedEntryContext) -> None:
+    def _attest_context(
+        self,
+        *,
+        merchant_ref: str,
+        location_ref: str,
+        table_ref: str | None,
+        dining_area_ref: str | None,
+        purpose,
+        context_binding_ref: str,
+        correlation_ref: str,
+        effective_at_epoch: int,
+    ):
         if self._xbos_context is None:
             raise SessionSecurityRequired("xbos_context_reattestation_required")
+        bound = getattr(self._xbos_context, "attest_bound_context", None)
         try:
-            attestation = self._xbos_context.attest_context(
-                merchant_ref=entry_context.merchant_ref,
-                location_ref=entry_context.location_ref,
-                table_ref=entry_context.table_ref,
-                purpose=entry_context.purpose,
-                dining_area_ref=entry_context.dining_area_ref,
+            if callable(bound):
+                return bound(
+                    context_binding_ref=context_binding_ref,
+                    merchant_ref=merchant_ref,
+                    location_ref=location_ref,
+                    table_ref=table_ref,
+                    purpose=purpose,
+                    dining_area_ref=dining_area_ref,
+                    effective_at=datetime.fromtimestamp(
+                        effective_at_epoch,
+                        tz=timezone.utc,
+                    ),
+                    correlation_ref=correlation_ref,
+                )
+            return self._xbos_context.attest_context(
+                merchant_ref=merchant_ref,
+                location_ref=location_ref,
+                table_ref=table_ref,
+                purpose=purpose,
+                dining_area_ref=dining_area_ref,
             )
         except (KeyError, PermissionError, ValueError):
             raise SessionSecurityRequired("entry_context_unavailable") from None
+
+    def _assert_entry_context_current(
+        self,
+        entry_context: ResolvedEntryContext,
+        *,
+        now_epoch: int,
+        correlation_ref: str,
+    ) -> None:
+        attestation = self._attest_context(
+            merchant_ref=entry_context.merchant_ref,
+            location_ref=entry_context.location_ref,
+            table_ref=entry_context.table_ref,
+            purpose=entry_context.purpose,
+            dining_area_ref=entry_context.dining_area_ref,
+            context_binding_ref=entry_context.context_binding_ref,
+            correlation_ref=correlation_ref,
+            effective_at_epoch=now_epoch,
+        )
         expected = (
             entry_context.tenant_ref,
             entry_context.merchant_ref,
@@ -200,7 +245,11 @@ class CustomerSessionService:
                 raise SessionSecurityRequired("session_expiry_must_be_future")
             if entry_token_ref is not None and entry_token_ref != entry_context.token_ref:
                 raise SessionSecurityRequired("entry_token_binding_mismatch")
-            self._assert_entry_context_current(entry_context)
+            self._assert_entry_context_current(
+                entry_context,
+                now_epoch=now_epoch,
+                correlation_ref=correlation_ref,
+            )
             binding = self._binding_for_entry_context(
                 identity_binding_ref=identity_binding_ref,
                 conversation_ref=conversation_ref,
@@ -297,19 +346,24 @@ class CustomerSessionService:
             raise PermissionError("session_stale_or_rotated")
         if self._xbos_context is None:
             raise SessionSecurityRequired("xbos_context_reattestation_required")
-        if current.merchant_ref is None or current.location_ref is None or current.entry_purpose is None:
+        if (
+            current.merchant_ref is None
+            or current.location_ref is None
+            or current.entry_purpose is None
+            or current.context_binding_ref is None
+        ):
             raise SessionSecurityRequired("bound_context_incomplete")
 
-        try:
-            attestation = self._xbos_context.attest_context(
-                merchant_ref=current.merchant_ref,
-                location_ref=current.location_ref,
-                table_ref=current.table_ref,
-                purpose=current.entry_purpose,
-                dining_area_ref=current.dining_area_ref,
-            )
-        except (KeyError, PermissionError, ValueError):
-            raise SessionSecurityRequired("entry_context_unavailable") from None
+        attestation = self._attest_context(
+            merchant_ref=current.merchant_ref,
+            location_ref=current.location_ref,
+            table_ref=current.table_ref,
+            purpose=current.entry_purpose,
+            dining_area_ref=current.dining_area_ref,
+            context_binding_ref=current.context_binding_ref,
+            correlation_ref=current.correlation_ref,
+            effective_at_epoch=now_epoch,
+        )
 
         bound = (
             current.tenant_ref,
@@ -366,18 +420,23 @@ class CustomerSessionService:
             raise PermissionError("session_expired")
         if self._xbos_context is None:
             raise SessionSecurityRequired("xbos_context_reattestation_required")
-        if current.merchant_ref is None or current.location_ref is None or current.entry_purpose is None:
+        if (
+            current.merchant_ref is None
+            or current.location_ref is None
+            or current.entry_purpose is None
+            or current.context_binding_ref is None
+        ):
             raise SessionSecurityRequired("bound_context_incomplete")
-        try:
-            attestation = self._xbos_context.attest_context(
-                merchant_ref=current.merchant_ref,
-                location_ref=current.location_ref,
-                table_ref=current.table_ref,
-                purpose=current.entry_purpose,
-                dining_area_ref=current.dining_area_ref,
-            )
-        except (KeyError, PermissionError, ValueError):
-            raise SessionSecurityRequired("entry_context_unavailable") from None
+        attestation = self._attest_context(
+            merchant_ref=current.merchant_ref,
+            location_ref=current.location_ref,
+            table_ref=current.table_ref,
+            purpose=current.entry_purpose,
+            dining_area_ref=current.dining_area_ref,
+            context_binding_ref=current.context_binding_ref,
+            correlation_ref=current.correlation_ref,
+            effective_at_epoch=now_epoch,
+        )
         bound = (
             current.tenant_ref,
             current.merchant_ref,

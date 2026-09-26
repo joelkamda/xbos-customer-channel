@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from ..transports.meta_whatsapp import MetaWhatsAppConfig
 
@@ -14,6 +14,7 @@ class RuntimeConfig:
     meta: MetaWhatsAppConfig
     xbos_private_base_url: str
     xbos_catalog_adapter: str
+    xbos_catalog_read_token: str | None = field(default=None, repr=False)
 
     @classmethod
     def from_environment(cls, environ: Mapping[str, str] | None = None) -> "RuntimeConfig":
@@ -36,8 +37,14 @@ class RuntimeConfig:
         if catalog_adapter not in {"fake", "real"}:
             raise ValueError("invalid_customer_channel_xbos_catalog_adapter")
 
+        raw_token = source.get(
+            "XAFPAY_CUSTOMER_CHANNEL_XBOS_CATALOG_READ_TOKEN"
+        )
+        catalog_read_token = None if raw_token is None else raw_token.strip() or None
+
         return cls(
             meta=meta,
             xbos_private_base_url=xbos_base_url.rstrip("/"),
             xbos_catalog_adapter=catalog_adapter,
+            xbos_catalog_read_token=catalog_read_token,
         )

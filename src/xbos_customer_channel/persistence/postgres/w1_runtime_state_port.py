@@ -144,11 +144,23 @@ class PostgresW1RuntimeStatePort(W1RuntimeStatePort):
                 "unsupported_runtime_state_schema_version"
             )
 
-        attestation = self._reattest_context(secure_session)
-        catalog_projection = self._xbos_catalog.get_catalog(
-            merchant_ref=secure_session.merchant_ref or "",
-            location_ref=secure_session.location_ref or "",
+        attestation = self._reattest_context(
+            secure_session,
+            effective_at=now,
         )
+        bound_catalog = getattr(self._xbos_catalog, "get_catalog_bound", None)
+        if callable(bound_catalog):
+            catalog_projection = bound_catalog(
+                merchant_ref=secure_session.merchant_ref or "",
+                location_ref=secure_session.location_ref or "",
+                effective_at=now,
+                correlation_ref=secure_session.correlation_ref,
+            )
+        else:
+            catalog_projection = self._xbos_catalog.get_catalog(
+                merchant_ref=secure_session.merchant_ref or "",
+                location_ref=secure_session.location_ref or "",
+            )
         if (
             catalog_projection.merchant_ref != secure_session.merchant_ref
             or catalog_projection.location_ref != secure_session.location_ref
@@ -304,7 +316,7 @@ class PostgresW1RuntimeStatePort(W1RuntimeStatePort):
         if inbound.metadata_phone_number_id != self._configured_endpoint_ref:
             raise ProviderEndpointMismatch("provider_endpoint_mismatch")
 
-    def _reattest_context(self, session):
+    def _reattest_context(self, session, *, effective_at: datetime):
         if (
             session.merchant_ref is None
             or session.location_ref is None
@@ -314,13 +326,26 @@ class PostgresW1RuntimeStatePort(W1RuntimeStatePort):
         ):
             raise SecureRuntimeSessionRequired("bound_context_incomplete")
         try:
-            attestation = self._xbos_context.attest_context(
-                merchant_ref=session.merchant_ref,
-                location_ref=session.location_ref,
-                table_ref=session.table_ref,
-                purpose=session.entry_purpose,
-                dining_area_ref=session.dining_area_ref,
-            )
+            bound = getattr(self._xbos_context, "attest_bound_context", None)
+            if callable(bound):
+                attestation = bound(
+                    context_binding_ref=session.context_binding_ref,
+                    merchant_ref=session.merchant_ref,
+                    location_ref=session.location_ref,
+                    table_ref=session.table_ref,
+                    purpose=session.entry_purpose,
+                    dining_area_ref=session.dining_area_ref,
+                    effective_at=effective_at,
+                    correlation_ref=session.correlation_ref,
+                )
+            else:
+                attestation = self._xbos_context.attest_context(
+                    merchant_ref=session.merchant_ref,
+                    location_ref=session.location_ref,
+                    table_ref=session.table_ref,
+                    purpose=session.entry_purpose,
+                    dining_area_ref=session.dining_area_ref,
+                )
         except (KeyError, PermissionError, ValueError):
             raise SecureRuntimeSessionRequired(
                 "entry_context_unavailable"

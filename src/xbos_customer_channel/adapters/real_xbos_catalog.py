@@ -9,6 +9,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol
 from uuid import UUID
 
+from .xbos_private_http import PrivateXBOSHTTPClient, PrivateXBOSHTTPError
 from ..catalog import (
     AvailabilityState,
     CatalogItemProjection,
@@ -52,6 +53,8 @@ class XBOSMenuReadBinding:
     currency: str
     scope_type: str
     scope_id: int | None = None
+    binding_ref: str | None = None
+    binding_version: int | None = None
 
     def __post_init__(self) -> None:
         if not self.merchant_ref or not self.location_ref:
@@ -65,6 +68,12 @@ class XBOSMenuReadBinding:
             raise ValueError("xbos_catalog_binding_currency_invalid")
         if not self.scope_type.strip():
             raise ValueError("xbos_catalog_binding_scope_type_required")
+        if (self.binding_ref is None) != (self.binding_version is None):
+            raise ValueError("xbos_catalog_binding_identity_incomplete")
+        if self.binding_ref is not None and not self.binding_ref.strip():
+            raise ValueError("xbos_catalog_binding_ref_required")
+        if self.binding_version is not None and self.binding_version <= 0:
+            raise ValueError("xbos_catalog_binding_version_invalid")
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,11 +95,121 @@ class XBOSCatalogBindingResolver(Protocol):
         location_ref: str,
     ) -> XBOSMenuReadBinding | None: ...
 
+    def resolve_bound(
+        self,
+        *,
+        merchant_ref: str,
+        location_ref: str,
+        effective_at: datetime,
+        correlation_ref: str,
+    ) -> XBOSMenuReadBinding | None: ...
+
 
 class XBOSMenuReadClient(Protocol):
     """Client seam for the accepted internal read operation R2Authority.menu."""
 
     def menu(self, request: XBOSMenuReadRequest) -> Any: ...
+
+    def menu_bound(
+        self,
+        request: XBOSMenuReadRequest,
+        *,
+        binding_ref: str,
+        binding_version: int,
+        correlation_ref: str,
+    ) -> Any: ...
+
+
+class PrivateXBOSCatalogBindingResolver:
+    """Resolve the XBOS-owned merchant/location catalog binding over the private seam."""
+
+    def __init__(self, client: PrivateXBOSHTTPClient) -> None:
+        self._client = client
+
+    def resolve(self, *, merchant_ref: str, location_ref: str) -> XBOSMenuReadBinding | None:
+        del merchant_ref, location_ref
+        raise RealXBOSCatalogUnavailable(
+            "bound_effective_at_and_correlation_required"
+        )
+
+    def resolve_bound(
+        self,
+        *,
+        merchant_ref: str,
+        location_ref: str,
+        effective_at: datetime,
+        correlation_ref: str,
+    ) -> XBOSMenuReadBinding | None:
+        try:
+            raw = self._client.resolve_catalog_binding(
+                merchant_ref=merchant_ref,
+                location_ref=location_ref,
+                effective_at=effective_at,
+                correlation_ref=correlation_ref,
+            )
+        except PrivateXBOSHTTPError as exc:
+            raise RealXBOSCatalogUnavailable(
+                f"xbos_catalog_binding_failed:{exc.reason}"
+            ) from exc
+        try:
+            binding_ref = raw["binding_ref"]
+            binding_version = raw["binding_version"]
+            tenant_id = raw["tenant_id"]
+            if not isinstance(binding_ref, str) or not binding_ref.strip():
+                raise ValueError("binding_ref_required")
+            if isinstance(binding_version, bool) or int(binding_version) <= 0:
+                raise ValueError("binding_version_invalid")
+            if isinstance(tenant_id, bool) or int(tenant_id) <= 0:
+                raise ValueError("tenant_id_invalid")
+            return XBOSMenuReadBinding(
+                merchant_ref=merchant_ref,
+                location_ref=location_ref,
+                tenant_id=int(tenant_id),
+                catalog_public_id=UUID(str(raw["catalog_public_id"])),
+                price_code=str(raw["price_code"]),
+                currency=str(raw["currency"]),
+                scope_type=str(raw["scope_type"]),
+                scope_id=(
+                    None if raw.get("scope_id") is None else int(raw["scope_id"])
+                ),
+                binding_ref=binding_ref.strip(),
+                binding_version=int(binding_version),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RealXBOSCatalogUnavailable(
+                "xbos_catalog_binding_malformed"
+            ) from exc
+
+
+class PrivateXBOSMenuReadClient:
+    """Forward the exact seven R2 menu inputs plus binding transport metadata."""
+
+    def __init__(self, client: PrivateXBOSHTTPClient) -> None:
+        self._client = client
+
+    def menu(self, request: XBOSMenuReadRequest) -> Any:
+        del request
+        raise XBOSMenuReadClientError(
+            "bound_catalog_read_required"
+        )
+
+    def menu_bound(
+        self,
+        request: XBOSMenuReadRequest,
+        *,
+        binding_ref: str,
+        binding_version: int,
+        correlation_ref: str,
+    ) -> Any:
+        try:
+            return self._client.menu(
+                request,
+                binding_ref=binding_ref,
+                binding_version=binding_version,
+                correlation_ref=correlation_ref,
+            )
+        except PrivateXBOSHTTPError as exc:
+            raise XBOSMenuReadClientError(exc.reason) from exc
 
 
 class RealXBOSCatalogAdapter:
@@ -123,30 +242,18 @@ class RealXBOSCatalogAdapter:
         merchant_ref: str,
         location_ref: str,
     ) -> CatalogProjection:
+        effective_at = self._effective_at_factory()
         binding = self._binding_resolver.resolve(
             merchant_ref=merchant_ref,
             location_ref=location_ref,
         )
         if binding is None:
             raise RealXBOSCatalogUnavailable("xbos_catalog_binding_unavailable")
-        if (
-            binding.merchant_ref != merchant_ref
-            or binding.location_ref != location_ref
-        ):
-            raise RealXBOSCatalogUnavailable("xbos_catalog_binding_context_mismatch")
-
-        effective_at = self._effective_at_factory()
-        if effective_at.tzinfo is None or effective_at.utcoffset() is None:
-            raise RealXBOSCatalogUnavailable("xbos_catalog_effective_at_must_be_aware")
-
-        request = XBOSMenuReadRequest(
-            tenant_id=binding.tenant_id,
-            catalog_public_id=binding.catalog_public_id,
-            effective_at=effective_at.astimezone(timezone.utc),
-            price_code=binding.price_code.strip().lower(),
-            currency=binding.currency.strip().upper(),
-            scope_type=binding.scope_type.strip().lower(),
-            scope_id=binding.scope_id,
+        request = self._request_for_binding(
+            binding,
+            merchant_ref=merchant_ref,
+            location_ref=location_ref,
+            effective_at=effective_at,
         )
         try:
             menu = self._client.menu(request)
@@ -158,12 +265,84 @@ class RealXBOSCatalogAdapter:
             raise RealXBOSCatalogUnavailable(
                 "xbos_catalog_read_failed:timeout"
             ) from exc
-
         return _map_menu_projection(
             menu,
             request=request,
             merchant_ref=merchant_ref,
             location_ref=location_ref,
+        )
+
+    def get_catalog_bound(
+        self,
+        *,
+        merchant_ref: str,
+        location_ref: str,
+        effective_at: datetime,
+        correlation_ref: str,
+    ) -> CatalogProjection:
+        resolver = getattr(self._binding_resolver, "resolve_bound", None)
+        reader = getattr(self._client, "menu_bound", None)
+        if not callable(resolver) or not callable(reader):
+            raise RealXBOSCatalogUnavailable(
+                "real_xbos_private_catalog_runtime_binding_unavailable"
+            )
+        binding = resolver(
+            merchant_ref=merchant_ref,
+            location_ref=location_ref,
+            effective_at=effective_at,
+            correlation_ref=correlation_ref,
+        )
+        if binding is None:
+            raise RealXBOSCatalogUnavailable("xbos_catalog_binding_unavailable")
+        if binding.binding_ref is None or binding.binding_version is None:
+            raise RealXBOSCatalogUnavailable("xbos_catalog_binding_identity_required")
+        request = self._request_for_binding(
+            binding,
+            merchant_ref=merchant_ref,
+            location_ref=location_ref,
+            effective_at=effective_at,
+        )
+        try:
+            menu = reader(
+                request,
+                binding_ref=binding.binding_ref,
+                binding_version=binding.binding_version,
+                correlation_ref=correlation_ref,
+            )
+        except XBOSMenuReadClientError as exc:
+            raise RealXBOSCatalogUnavailable(
+                f"xbos_catalog_read_failed:{exc.reason}"
+            ) from exc
+        return _map_menu_projection(
+            menu,
+            request=request,
+            merchant_ref=merchant_ref,
+            location_ref=location_ref,
+        )
+
+    @staticmethod
+    def _request_for_binding(
+        binding: XBOSMenuReadBinding,
+        *,
+        merchant_ref: str,
+        location_ref: str,
+        effective_at: datetime,
+    ) -> XBOSMenuReadRequest:
+        if (
+            binding.merchant_ref != merchant_ref
+            or binding.location_ref != location_ref
+        ):
+            raise RealXBOSCatalogUnavailable("xbos_catalog_binding_context_mismatch")
+        if effective_at.tzinfo is None or effective_at.utcoffset() is None:
+            raise RealXBOSCatalogUnavailable("xbos_catalog_effective_at_must_be_aware")
+        return XBOSMenuReadRequest(
+            tenant_id=binding.tenant_id,
+            catalog_public_id=binding.catalog_public_id,
+            effective_at=effective_at.astimezone(timezone.utc),
+            price_code=binding.price_code.strip().lower(),
+            currency=binding.currency.strip().upper(),
+            scope_type=binding.scope_type.strip().lower(),
+            scope_id=binding.scope_id,
         )
 
     def resolve_quote(

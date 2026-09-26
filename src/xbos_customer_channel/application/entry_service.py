@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import secrets
 import time
+from datetime import datetime, timezone
 from urllib.parse import parse_qs, urlparse
 
 from ..entry_context import (
@@ -70,6 +71,45 @@ class EntryContextService:
             and record.context_binding_ref == attestation.context_binding_ref
         )
 
+    def _attest(
+        self,
+        *,
+        merchant_ref: str,
+        location_ref: str,
+        table_ref: str | None,
+        dining_area_ref: str | None,
+        purpose: EntryPurpose,
+        context_binding_ref: str | None,
+        correlation_ref: str | None,
+        effective_at_epoch: int,
+    ) -> EntryContextAttestation:
+        bound = getattr(self._xbos, "attest_bound_context", None)
+        if callable(bound):
+            if not context_binding_ref:
+                raise EntryContextRejected("entry_context_binding_missing")
+            if not correlation_ref:
+                raise EntryContextRejected("entry_context_correlation_missing")
+            return bound(
+                context_binding_ref=context_binding_ref,
+                merchant_ref=merchant_ref,
+                location_ref=location_ref,
+                table_ref=table_ref,
+                purpose=purpose,
+                dining_area_ref=dining_area_ref,
+                effective_at=datetime.fromtimestamp(
+                    effective_at_epoch,
+                    tz=timezone.utc,
+                ),
+                correlation_ref=correlation_ref,
+            )
+        return self._xbos.attest_context(
+            merchant_ref=merchant_ref,
+            location_ref=location_ref,
+            table_ref=table_ref,
+            purpose=purpose,
+            dining_area_ref=dining_area_ref,
+        )
+
     def issue_entry(
         self,
         *,
@@ -81,6 +121,8 @@ class EntryContextService:
         expires_at_epoch: int,
         replay_policy: ReplayPolicy,
         now_epoch: int | None = None,
+        context_binding_ref: str | None = None,
+        correlation_ref: str | None = None,
     ) -> tuple[EntryTokenRecord, str]:
         current = int(time.time()) if now_epoch is None else now_epoch
         if expires_at_epoch <= current:
@@ -89,12 +131,15 @@ class EntryContextService:
             raise ValueError("table_required_for_dine_in")
 
         try:
-            attestation = self._xbos.attest_context(
+            attestation = self._attest(
                 merchant_ref=merchant_ref,
                 location_ref=location_ref,
                 table_ref=table_ref,
                 purpose=purpose,
                 dining_area_ref=dining_area_ref,
+                context_binding_ref=context_binding_ref,
+                correlation_ref=correlation_ref,
+                effective_at_epoch=current,
             )
         except (KeyError, PermissionError, ValueError):
             raise EntryContextRejected("entry_context_unavailable") from None
@@ -137,6 +182,7 @@ class EntryContextService:
         *,
         now_epoch: int | None = None,
         expected_merchant_ref: str | None = None,
+        correlation_ref: str | None = None,
     ) -> ResolvedEntryContext:
         current = int(time.time()) if now_epoch is None else now_epoch
         try:
@@ -159,12 +205,15 @@ class EntryContextService:
             raise EntryContextRejected("unsafe_replay_rejected")
 
         try:
-            attestation = self._xbos.attest_context(
+            attestation = self._attest(
                 merchant_ref=record.merchant_ref,
                 location_ref=record.location_ref,
                 table_ref=record.table_ref,
                 purpose=record.purpose,
                 dining_area_ref=record.dining_area_ref,
+                context_binding_ref=record.context_binding_ref,
+                correlation_ref=correlation_ref,
+                effective_at_epoch=current,
             )
         except (KeyError, PermissionError, ValueError):
             raise EntryContextRejected("entry_context_unavailable") from None

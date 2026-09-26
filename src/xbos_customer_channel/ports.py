@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Protocol, Sequence
 
 from .catalog import CatalogProjection, CommercialQuoteSnapshot, InteractionCart
@@ -61,6 +62,19 @@ class XBOSContextPort(Protocol):
         table_ref: str | None,
         purpose: EntryPurpose,
         dining_area_ref: str | None = None,
+    ) -> EntryContextAttestation: ...
+
+    def attest_bound_context(
+        self,
+        *,
+        context_binding_ref: str,
+        merchant_ref: str,
+        location_ref: str,
+        table_ref: str | None,
+        purpose: EntryPurpose,
+        dining_area_ref: str | None,
+        effective_at: datetime,
+        correlation_ref: str,
     ) -> EntryContextAttestation: ...
 
 
