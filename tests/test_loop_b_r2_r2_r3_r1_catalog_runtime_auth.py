@@ -143,6 +143,9 @@ class LoopBR2R2R3R1CatalogRuntimeAuthTests(unittest.TestCase):
         )
         client.menu(
             request,
+            context_binding_ref="00000000-0000-0000-0000-000000000001",
+            merchant_ref="00000000-0000-0000-0000-000000000002",
+            location_ref="00000000-0000-0000-0000-000000000003",
             binding_ref="binding-1",
             binding_version=1,
             correlation_ref="corr-r2-r2-r3-r1",
@@ -179,8 +182,9 @@ class LoopBR2R2R3R1CatalogRuntimeAuthTests(unittest.TestCase):
             sleeper=sleeps.append,
         )
         client.resolve_catalog_binding(
-            merchant_ref="merchant-1",
-            location_ref="location-1",
+            context_binding_ref="00000000-0000-0000-0000-000000000001",
+            merchant_ref="00000000-0000-0000-0000-000000000002",
+            location_ref="00000000-0000-0000-0000-000000000003",
             effective_at=NOW,
             correlation_ref="corr-r2-r2-r3-r1",
         )

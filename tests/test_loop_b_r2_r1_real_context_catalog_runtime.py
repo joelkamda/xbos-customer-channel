@@ -178,6 +178,7 @@ class LoopBR2R1RealContextCatalogRuntimeTests(unittest.TestCase):
             effective_at_factory=lambda: NOW,
         )
         projection = adapter.get_catalog_bound(
+            context_binding_ref="ctx-wnd-logpom",
             merchant_ref="merchant-wnd",
             location_ref="location-logpom",
             effective_at=NOW,
@@ -209,6 +210,7 @@ class LoopBR2R1RealContextCatalogRuntimeTests(unittest.TestCase):
             "binding_malformed",
         ):
             adapter.get_catalog_bound(
+                context_binding_ref="ctx-wnd-logpom",
                 merchant_ref="merchant-wnd",
                 location_ref="location-logpom",
                 effective_at=NOW,

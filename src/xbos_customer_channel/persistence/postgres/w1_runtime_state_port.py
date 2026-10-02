@@ -151,6 +151,7 @@ class PostgresW1RuntimeStatePort(W1RuntimeStatePort):
         bound_catalog = getattr(self._xbos_catalog, "get_catalog_bound", None)
         if callable(bound_catalog):
             catalog_projection = bound_catalog(
+                context_binding_ref=secure_session.context_binding_ref or "",
                 merchant_ref=secure_session.merchant_ref or "",
                 location_ref=secure_session.location_ref or "",
                 effective_at=now,

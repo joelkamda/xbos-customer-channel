@@ -98,6 +98,7 @@ class XBOSCatalogBindingResolver(Protocol):
     def resolve_bound(
         self,
         *,
+        context_binding_ref: str,
         merchant_ref: str,
         location_ref: str,
         effective_at: datetime,
@@ -114,6 +115,9 @@ class XBOSMenuReadClient(Protocol):
         self,
         request: XBOSMenuReadRequest,
         *,
+        context_binding_ref: str,
+        merchant_ref: str,
+        location_ref: str,
         binding_ref: str,
         binding_version: int,
         correlation_ref: str,
@@ -135,6 +139,7 @@ class PrivateXBOSCatalogBindingResolver:
     def resolve_bound(
         self,
         *,
+        context_binding_ref: str,
         merchant_ref: str,
         location_ref: str,
         effective_at: datetime,
@@ -142,6 +147,7 @@ class PrivateXBOSCatalogBindingResolver:
     ) -> XBOSMenuReadBinding | None:
         try:
             raw = self._client.resolve_catalog_binding(
+                context_binding_ref=context_binding_ref,
                 merchant_ref=merchant_ref,
                 location_ref=location_ref,
                 effective_at=effective_at,
@@ -197,6 +203,9 @@ class PrivateXBOSMenuReadClient:
         self,
         request: XBOSMenuReadRequest,
         *,
+        context_binding_ref: str,
+        merchant_ref: str,
+        location_ref: str,
         binding_ref: str,
         binding_version: int,
         correlation_ref: str,
@@ -204,6 +213,9 @@ class PrivateXBOSMenuReadClient:
         try:
             return self._client.menu(
                 request,
+                context_binding_ref=context_binding_ref,
+                merchant_ref=merchant_ref,
+                location_ref=location_ref,
                 binding_ref=binding_ref,
                 binding_version=binding_version,
                 correlation_ref=correlation_ref,
@@ -275,6 +287,7 @@ class RealXBOSCatalogAdapter:
     def get_catalog_bound(
         self,
         *,
+        context_binding_ref: str,
         merchant_ref: str,
         location_ref: str,
         effective_at: datetime,
@@ -287,6 +300,7 @@ class RealXBOSCatalogAdapter:
                 "real_xbos_private_catalog_runtime_binding_unavailable"
             )
         binding = resolver(
+            context_binding_ref=context_binding_ref,
             merchant_ref=merchant_ref,
             location_ref=location_ref,
             effective_at=effective_at,
@@ -305,6 +319,9 @@ class RealXBOSCatalogAdapter:
         try:
             menu = reader(
                 request,
+                context_binding_ref=context_binding_ref,
+                merchant_ref=merchant_ref,
+                location_ref=location_ref,
                 binding_ref=binding.binding_ref,
                 binding_version=binding.binding_version,
                 correlation_ref=correlation_ref,
@@ -339,7 +356,7 @@ class RealXBOSCatalogAdapter:
             tenant_id=binding.tenant_id,
             catalog_public_id=binding.catalog_public_id,
             effective_at=effective_at.astimezone(timezone.utc),
-            price_code=binding.price_code.strip().lower(),
+            price_code=binding.price_code.strip(),
             currency=binding.currency.strip().upper(),
             scope_type=binding.scope_type.strip().lower(),
             scope_id=binding.scope_id,
@@ -384,7 +401,7 @@ def _map_menu_projection(
         raise RealXBOSCatalogUnavailable("xbos_catalog_identity_mismatch")
 
     pricing = _field(menu, "pricing_context")
-    price_code = _text_field(pricing, "price_code").lower()
+    price_code = _text_field(pricing, "price_code")
     currency = _currency(_field(pricing, "currency"))
     scope_type = _text_field(pricing, "scope_type").lower()
     scope_id = _optional_int(_optional_field(pricing, "scope_id"))
@@ -456,7 +473,7 @@ def _map_menu_projection(
             resolved_price_code = _text_field(
                 resolved_price,
                 "price_code",
-            ).lower()
+            )
             if resolved_price_code != price_code:
                 raise RealXBOSCatalogUnavailable(
                     "xbos_catalog_item_price_code_mismatch"

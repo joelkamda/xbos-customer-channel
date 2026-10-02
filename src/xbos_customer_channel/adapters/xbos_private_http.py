@@ -107,15 +107,18 @@ class PrivateXBOSHTTPClient:
     def resolve_catalog_binding(
         self,
         *,
+        context_binding_ref: str,
         merchant_ref: str,
         location_ref: str,
         effective_at: datetime,
         correlation_ref: str,
     ) -> dict[str, Any]:
+        if not context_binding_ref.strip():
+            raise PrivateXBOSHTTPError("context_binding_ref_required")
         payload = {
-            "schema": "xafpay.customer-channel.xbos-catalog-binding-read.v1",
-            "merchant_ref": merchant_ref,
-            "location_ref": location_ref,
+            "context_binding_ref": context_binding_ref,
+            "merchant_public_id": merchant_ref,
+            "location_public_id": location_ref,
             "effective_at": _aware_utc(effective_at).isoformat(),
         }
         return self._post(BINDING_PATH, payload, correlation_ref=correlation_ref)
@@ -124,23 +127,24 @@ class PrivateXBOSHTTPClient:
         self,
         request: Any,
         *,
+        context_binding_ref: str,
+        merchant_ref: str,
+        location_ref: str,
         binding_ref: str,
         binding_version: int,
         correlation_ref: str,
     ) -> dict[str, Any]:
+        if not context_binding_ref.strip():
+            raise PrivateXBOSHTTPError("context_binding_ref_required")
         if not binding_ref.strip() or binding_version <= 0:
             raise PrivateXBOSHTTPError("catalog_binding_reference_invalid")
         payload = {
-            "schema": "xafpay.customer-channel.xbos-menu-read.v1",
+            "context_binding_ref": context_binding_ref,
+            "merchant_public_id": merchant_ref,
+            "location_public_id": location_ref,
             "binding_ref": binding_ref,
             "binding_version": binding_version,
-            "tenant_id": request.tenant_id,
-            "catalog_public_id": str(request.catalog_public_id),
             "effective_at": _aware_utc(request.effective_at).isoformat(),
-            "price_code": request.price_code,
-            "currency": request.currency,
-            "scope_type": request.scope_type,
-            "scope_id": request.scope_id,
         }
         return self._post(MENU_PATH, payload, correlation_ref=correlation_ref)
 

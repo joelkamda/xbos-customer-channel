@@ -104,6 +104,7 @@ class LoopBR2R1PrivateXBOSHTTPTests(unittest.TestCase):
 
         client = self.client(handler, sleeps)
         client.resolve_catalog_binding(
+            context_binding_ref="ctx-1",
             merchant_ref="merchant-1",
             location_ref="location-1",
             effective_at=NOW,
@@ -116,7 +117,7 @@ class LoopBR2R1PrivateXBOSHTTPTests(unittest.TestCase):
         self.assertEqual(body(seen[0])["effective_at"], NOW.isoformat())
         self.assertEqual(sleeps, [0.1])
 
-    def test_menu_request_forwards_exact_seven_inputs_plus_binding_metadata(self):
+    def test_menu_request_forwards_exact_six_field_xbos_contract(self):
         seen = []
 
         def handler(request):
@@ -135,6 +136,9 @@ class LoopBR2R1PrivateXBOSHTTPTests(unittest.TestCase):
         )
         client.menu(
             request,
+            context_binding_ref="ctx-1",
+            merchant_ref="merchant-1",
+            location_ref="location-1",
             binding_ref="bind-1",
             binding_version=4,
             correlation_ref=CORRELATION,
@@ -144,21 +148,30 @@ class LoopBR2R1PrivateXBOSHTTPTests(unittest.TestCase):
         self.assertEqual(
             set(payload),
             {
-                "schema",
+                "context_binding_ref",
+                "merchant_public_id",
+                "location_public_id",
                 "binding_ref",
                 "binding_version",
-                "tenant_id",
-                "catalog_public_id",
                 "effective_at",
-                "price_code",
-                "currency",
-                "scope_type",
-                "scope_id",
             },
         )
+        self.assertEqual(payload["context_binding_ref"], "ctx-1")
+        self.assertEqual(payload["merchant_public_id"], "merchant-1")
+        self.assertEqual(payload["location_public_id"], "location-1")
         self.assertEqual(payload["binding_ref"], "bind-1")
         self.assertEqual(payload["binding_version"], 4)
         self.assertEqual(payload["effective_at"], NOW.isoformat())
+        for forbidden in (
+            "schema",
+            "tenant_id",
+            "catalog_public_id",
+            "price_code",
+            "currency",
+            "scope_type",
+            "scope_id",
+        ):
+            self.assertNotIn(forbidden, payload)
 
     def test_auth_failure_is_not_retried(self):
         calls = []
@@ -171,6 +184,7 @@ class LoopBR2R1PrivateXBOSHTTPTests(unittest.TestCase):
         client = self.client(handler, sleeps)
         with self.assertRaisesRegex(PrivateXBOSHTTPError, "auth_failure"):
             client.resolve_catalog_binding(
+                context_binding_ref="ctx-1",
                 merchant_ref="merchant-1",
                 location_ref="location-1",
                 effective_at=NOW,
@@ -190,6 +204,7 @@ class LoopBR2R1PrivateXBOSHTTPTests(unittest.TestCase):
         client = self.client(handler, sleeps)
         with self.assertRaisesRegex(PrivateXBOSHTTPError, "409"):
             client.resolve_catalog_binding(
+                context_binding_ref="ctx-1",
                 merchant_ref="merchant-1",
                 location_ref="location-1",
                 effective_at=NOW,
@@ -209,6 +224,7 @@ class LoopBR2R1PrivateXBOSHTTPTests(unittest.TestCase):
         client = self.client(handler, sleeps)
         with self.assertRaisesRegex(PrivateXBOSHTTPError, "404"):
             client.resolve_catalog_binding(
+                context_binding_ref="ctx-1",
                 merchant_ref="merchant-1",
                 location_ref="location-1",
                 effective_at=NOW,
@@ -238,6 +254,9 @@ class LoopBR2R1PrivateXBOSHTTPTests(unittest.TestCase):
         with self.assertRaisesRegex(PrivateXBOSHTTPError, "409"):
             client.menu(
                 request,
+                context_binding_ref="ctx-1",
+                merchant_ref="merchant-1",
+                location_ref="location-1",
                 binding_ref="bind-1",
                 binding_version=4,
                 correlation_ref=CORRELATION,
@@ -259,6 +278,7 @@ class LoopBR2R1PrivateXBOSHTTPTests(unittest.TestCase):
             "xbos_private_transport_timeout",
         ):
             client.resolve_catalog_binding(
+                context_binding_ref="ctx-1",
                 merchant_ref="merchant-1",
                 location_ref="location-1",
                 effective_at=NOW,
@@ -277,6 +297,7 @@ class LoopBR2R1PrivateXBOSHTTPTests(unittest.TestCase):
         client = self.client(handler)
         with self.assertRaisesRegex(PrivateXBOSHTTPError, "correlation_ref_required"):
             client.resolve_catalog_binding(
+                context_binding_ref="ctx-1",
                 merchant_ref="merchant-1",
                 location_ref="location-1",
                 effective_at=NOW,
