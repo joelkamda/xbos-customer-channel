@@ -16,6 +16,8 @@ READ_TIMEOUT_SECONDS = 3.0
 MAX_RETRY_COUNT = 1
 RETRY_BACKOFF_SECONDS = 0.1
 _RETRYABLE_STATUS = frozenset({502, 503, 504})
+CATALOG_SERVICE_PRINCIPAL = "customer-channel-catalog-reader"
+CATALOG_SERVICE_SCOPE = "restaurant.menu.read"
 
 
 class PrivateXBOSHTTPError(RuntimeError):
@@ -46,17 +48,27 @@ class PrivateXBOSHTTPClient:
         *,
         base_url: str,
         bearer_token: str,
+        service_principal: str = CATALOG_SERVICE_PRINCIPAL,
+        service_scope: str = CATALOG_SERVICE_SCOPE,
         client: httpx.Client | None = None,
         sleeper: Callable[[float], None] = time.sleep,
     ) -> None:
         selected_url = base_url.strip().rstrip("/")
         selected_token = bearer_token.strip()
+        selected_principal = service_principal.strip()
+        selected_scope = service_scope.strip()
         if not selected_url.startswith(("http://", "https://")):
             raise ValueError("invalid_xbos_private_base_url")
         if not selected_token:
             raise ValueError("xbos_catalog_read_token_required")
+        if selected_principal != CATALOG_SERVICE_PRINCIPAL:
+            raise ValueError("xbos_catalog_service_principal_invalid")
+        if selected_scope != CATALOG_SERVICE_SCOPE or len(selected_scope.split()) != 1:
+            raise ValueError("xbos_catalog_service_scope_invalid")
         self._base_url = selected_url
         self._bearer_token = selected_token
+        self._service_principal = selected_principal
+        self._service_scope = selected_scope
         self._client = client or httpx.Client()
         self._sleeper = sleeper
         self._timeout = httpx.Timeout(
@@ -144,6 +156,8 @@ class PrivateXBOSHTTPClient:
             raise PrivateXBOSHTTPError("correlation_ref_required")
         headers = {
             "Authorization": f"Bearer {self._bearer_token}",
+            "X-Service-Principal": self._service_principal,
+            "X-Service-Scopes": self._service_scope,
             "X-Correlation-Ref": trace,
             "Content-Type": "application/json",
         }

@@ -71,6 +71,8 @@ def compose_real_xbos_boundaries(
     client_kwargs = {
         "base_url": config.xbos_private_base_url,
         "bearer_token": token,
+        "service_principal": config.xbos_catalog_service_principal,
+        "service_scope": config.xbos_catalog_service_scope,
         "client": http_client,
     }
     if sleeper is not None:
