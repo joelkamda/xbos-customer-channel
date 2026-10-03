@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import os
+
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 
+from ..application.w1_composition import XBOSW1ContractUnavailable
+from ..persistence.postgres.schema import DATABASE_URL_ENV
 from ..transports.meta_whatsapp import (
     InvalidWebhookSignature,
     MetaWhatsAppInboundAdapter,
@@ -10,6 +14,10 @@ from ..transports.meta_whatsapp import (
     ProviderPayloadRejected,
 )
 from .config import RuntimeConfig
+from .durable_w1 import (
+    DurableW1SessionRuntime,
+    compose_durable_w1_session_runtime,
+)
 
 
 app = FastAPI(
@@ -26,6 +34,27 @@ def _config() -> RuntimeConfig:
             status_code=503,
             detail="runtime_configuration_unavailable",
         ) from None
+
+
+def _materialize_durable_w1_session_runtime(
+    request: Request,
+    config: RuntimeConfig,
+) -> DurableW1SessionRuntime | None:
+    """Bind durable W1/session state only when the canonical DB key is present."""
+
+    if not os.environ.get(DATABASE_URL_ENV, "").strip():
+        return None
+
+    try:
+        runtime = compose_durable_w1_session_runtime(config)
+    except (ValueError, XBOSW1ContractUnavailable):
+        raise HTTPException(
+            status_code=503,
+            detail="durable_runtime_configuration_unavailable",
+        ) from None
+
+    request.app.state.durable_w1_session_runtime = runtime
+    return runtime
 
 
 @app.get("/health")
@@ -61,7 +90,8 @@ def verify_meta_subscription(
 async def receive_meta_callback(request: Request) -> JSONResponse:
     raw_body = await request.body()
     signature = request.headers.get("X-Hub-Signature-256")
-    inbound = MetaWhatsAppInboundAdapter(_config().meta)
+    config = _config()
+    inbound = MetaWhatsAppInboundAdapter(config.meta)
 
     try:
         inbound.receive(
@@ -78,6 +108,8 @@ async def receive_meta_callback(request: Request) -> JSONResponse:
             status_code=400,
             detail="invalid_webhook_payload",
         ) from None
+
+    _materialize_durable_w1_session_runtime(request, config)
 
     return JSONResponse(
         {
