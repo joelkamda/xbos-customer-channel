@@ -4,6 +4,10 @@ LANE=CUSTOMER_CHANNEL
 
 CHANNEL_START_HERE_IS_DOMAIN_AUTHORITY=NO
 DOMAIN_AUTHORITY=governance/handoff/LIVING_HANDOFF.md
+DOMAIN_AUTHORITY_BRANCH=governance/channel-start-here-bootstrap
+DOMAIN_AUTHORITY_WORKTREE=C:/Users/jdkam/xbos-customer-channel-worktrees/channel-start-here-bootstrap
+DOMAIN_AUTHORITY_RESOLUTION=GOVERNANCE_BRANCH_FIRST_NOT_CURRENT_CHECKOUT_RELATIVE
+LOCAL_CHECKOUT_HANDOFF_MAY_BE_HISTORICAL=YES
 
 CHAT_MEMORY_PRIMARY_SOURCE=NO
 REPOSITORY_EVIDENCE_PRIMARY_SOURCE=YES
@@ -33,7 +37,7 @@ A successor must use this file only to locate the current lane authority, verify
 Follow this sequence in order:
 
 1. Read this file completely.
-2. Read `governance/handoff/LIVING_HANDOFF.md` completely.
+2. Resolve the current living handoff from `governance/channel-start-here-bootstrap`: prefer `C:/Users/jdkam/xbos-customer-channel-worktrees/channel-start-here-bootstrap/governance/handoff/LIVING_HANDOFF.md` when that verified worktree exists; otherwise read `governance/channel-start-here-bootstrap:governance/handoff/LIVING_HANDOFF.md` from live Git. Do not substitute the current checkout's local handoff copy merely because it exists.
 3. Read `governance/handoff/EVIDENCE_INDEX.md` only as needed to verify immutable evidence, hashes, commits, tags, or lineage.
 4. Read `governance/handoff/DECISION_HISTORY.md` only as needed to understand consequential governance or architecture decisions.
 5. Verify the live Git repository before any mutation.
@@ -45,7 +49,7 @@ Follow this sequence in order:
 Bootstrap chain:
 
 `CHANNEL_START_HERE.md`
-→ `governance/handoff/LIVING_HANDOFF.md`
+→ `governance/channel-start-here-bootstrap:governance/handoff/LIVING_HANDOFF.md`
 → `EVIDENCE_INDEX.md` only as needed
 → `DECISION_HISTORY.md` only as needed
 → live Git verification before mutation
@@ -56,9 +60,11 @@ Bootstrap chain:
 
 ## Source-of-truth rules
 
-The primary source for current Customer Channel authority is:
+The primary source for current Customer Channel authority is the living handoff on the established governance branch:
 
-`governance/handoff/LIVING_HANDOFF.md`
+`governance/channel-start-here-bootstrap:governance/handoff/LIVING_HANDOFF.md`
+
+A checkout-relative copy of `governance/handoff/LIVING_HANDOFF.md` may be historical and must not override the established governance branch merely because it is present.
 
 Repository evidence is the primary source for repository facts.
 
