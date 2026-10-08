@@ -15,8 +15,9 @@ from ...application.w1_whatsapp_runtime import (
     W1RuntimeConversationState,
     W1RuntimeStatePort,
 )
+from ...channel_contract import ChannelOutboundIntent
 from ...ports import XBOSCatalogPort, XBOSContextPort
-from ...transports.meta_whatsapp import NormalizedInboundMessage
+from .outbound_intent_store import PostgresChannelOutboundIntentStore
 from .runtime_state_store import PostgresRuntimeStateStore
 from .schema import STATE_SCHEMA_VERSION
 from .security_state_stores import (
@@ -33,6 +34,8 @@ from .transport_state_stores import (
     DeliveryConflict,
     PostgresIdempotencyResultStore,
     PostgresProviderMessageReceiptStore,
+    PostgresTransportDeliveryStore,
+    TransportDelivery,
 )
 
 
@@ -66,6 +69,7 @@ class _PendingLoad:
     receipt_row_version: int
     idempotency_ref: object
     idempotency_row_version: int
+    transport_delivery_ref: object | None = None
 
 
 class PostgresW1RuntimeStatePort(W1RuntimeStatePort):
@@ -85,6 +89,7 @@ class PostgresW1RuntimeStatePort(W1RuntimeStatePort):
         receipt_store: PostgresProviderMessageReceiptStore,
         idempotency_store: PostgresIdempotencyResultStore,
         locator_key_ring: LocatorKeyRing,
+        delivery_store: PostgresTransportDeliveryStore | None = None,
         xbos_context: XBOSContextPort,
         xbos_catalog: XBOSCatalogPort,
         configured_endpoint_ref: str | None = None,
@@ -100,6 +105,12 @@ class PostgresW1RuntimeStatePort(W1RuntimeStatePort):
         self._identity_binding_store = identity_binding_store
         self._receipt_store = receipt_store
         self._idempotency_store = idempotency_store
+        self._delivery_store = delivery_store
+        self._outbound_intents = (
+            None
+            if delivery_store is None
+            else PostgresChannelOutboundIntentStore(delivery_store)
+        )
         self._locator_key_ring = locator_key_ring
         self._xbos_context = xbos_context
         self._xbos_catalog = xbos_catalog
@@ -107,7 +118,7 @@ class PostgresW1RuntimeStatePort(W1RuntimeStatePort):
         self._pending: dict[str, _PendingLoad] = {}
         self._pending_lock = RLock()
 
-    def load(self, inbound: NormalizedInboundMessage) -> W1RuntimeConversationState:
+    def load(self, inbound: object) -> W1RuntimeConversationState:
         self._assert_endpoint(inbound)
         now = datetime.now(timezone.utc)
         endpoint = inbound.metadata_phone_number_id
@@ -255,9 +266,82 @@ class PostgresW1RuntimeStatePort(W1RuntimeStatePort):
             self._pending[event_key] = pending
         return state
 
+    def reserve_outbound(
+        self,
+        inbound: object,
+        intent: ChannelOutboundIntent,
+        *,
+        render_ordinal: int = 0,
+    ) -> TransportDelivery:
+        """Reserve durable delivery before W1 state is committed or provider send begins."""
+
+        self._assert_endpoint(inbound)
+        if self._outbound_intents is None:
+            raise W1DurableStateRejected("durable_outbound_store_required")
+        event_key = _event_key(inbound)
+        with self._pending_lock:
+            pending = self._pending.get(event_key)
+        if pending is None:
+            raise W1DurableStateRejected("outbound_reservation_without_corresponding_load")
+        if pending.transport_delivery_ref is not None:
+            raise W1DurableStateRejected("outbound_delivery_already_reserved")
+
+        session = pending.session
+        if (
+            intent.conversation_ref != session.conversation_ref
+            or intent.session_ref != session.session_ref
+            or intent.merchant_ref != session.merchant_ref
+        ):
+            raise SecureRuntimeSessionRequired("outbound_intent_session_context_mismatch")
+        if intent.recipient != inbound.sender.value:
+            raise SecureRuntimeSessionRequired("outbound_intent_recipient_mismatch")
+
+        now = datetime.now(timezone.utc)
+        recipient_lookup_hash = self._locator_key_ring.current(
+            channel_code=CHANNEL_CODE,
+            provider_endpoint_ref=inbound.metadata_phone_number_id,
+            raw_sender=inbound.sender.value,
+        ).digest
+        delivery = self._outbound_intents.reserve(
+            intent=intent,
+            receipt_ref=pending.receipt_ref,
+            render_ordinal=render_ordinal,
+            recipient_lookup_hash=recipient_lookup_hash,
+            provider_code=PROVIDER_CODE,
+            now_utc=now,
+            purge_after_utc=_purge_after(session.expires_at_epoch),
+        )
+        with self._pending_lock:
+            current = self._pending.get(event_key)
+            if current != pending:
+                raise W1DurableStateRejected("outbound_reservation_pending_state_changed")
+            self._pending[event_key] = replace(
+                pending,
+                transport_delivery_ref=delivery.delivery_ref,
+            )
+        return delivery
+
+    def record_outbound_outcome(
+        self,
+        reservation: TransportDelivery,
+        *,
+        delivery_state: str,
+        provider_message_ref: str | None,
+        provider_error_code: str | None,
+    ) -> TransportDelivery:
+        if self._outbound_intents is None:
+            raise W1DurableStateRejected("durable_outbound_store_required")
+        return self._outbound_intents.record_send_outcome(
+            reservation=reservation,
+            delivery_state=delivery_state,
+            provider_message_ref=provider_message_ref,
+            provider_error_code=provider_error_code,
+            now_utc=datetime.now(timezone.utc),
+        )
+
     def save(
         self,
-        inbound: NormalizedInboundMessage,
+        inbound: object,
         state: W1RuntimeConversationState,
     ) -> None:
         self._assert_endpoint(inbound)
@@ -266,6 +350,10 @@ class PostgresW1RuntimeStatePort(W1RuntimeStatePort):
             pending = self._pending.get(event_key)
         if pending is None:
             raise W1DurableStateRejected("save_without_corresponding_load")
+        if self._outbound_intents is not None and pending.transport_delivery_ref is None:
+            raise W1DurableStateRejected(
+                "durable_outbound_reservation_required_before_state_save"
+            )
 
         try:
             if state.session != pending.session:
@@ -306,14 +394,14 @@ class PostgresW1RuntimeStatePort(W1RuntimeStatePort):
                 expected_row_version=pending.receipt_row_version,
                 processing_state="processed",
                 idempotency_result_ref=completed.idempotency_result_ref,
-                transport_delivery_ref=None,
+                transport_delivery_ref=pending.transport_delivery_ref,
                 now_utc=now,
             )
         finally:
             with self._pending_lock:
                 self._pending.pop(event_key, None)
 
-    def _assert_endpoint(self, inbound: NormalizedInboundMessage) -> None:
+    def _assert_endpoint(self, inbound: object) -> None:
         if inbound.metadata_phone_number_id != self._configured_endpoint_ref:
             raise ProviderEndpointMismatch("provider_endpoint_mismatch")
 
@@ -374,7 +462,7 @@ class PostgresW1RuntimeStatePort(W1RuntimeStatePort):
         return attestation
 
 
-def _event_key(inbound: NormalizedInboundMessage) -> str:
+def _event_key(inbound: object) -> str:
     return (
         f"{PROVIDER_CODE}:{inbound.metadata_phone_number_id}:"
         f"{inbound.provider_message_ref}"
@@ -382,7 +470,7 @@ def _event_key(inbound: NormalizedInboundMessage) -> str:
 
 
 def _request_fingerprint(
-    inbound: NormalizedInboundMessage,
+    inbound: object,
     *,
     sender_lookup_hash: str,
 ) -> str:
@@ -413,7 +501,7 @@ def _request_fingerprint(
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _normalized_action_code(inbound: NormalizedInboundMessage) -> str:
+def _normalized_action_code(inbound: object) -> str:
     reply = inbound.interactive_reply
     if reply is not None:
         return f"{reply.kind.value}:{reply.reply_id}"

@@ -17,6 +17,7 @@ from ..persistence.postgres.serialization import LocatorKeyRing
 from ..persistence.postgres.transport_state_stores import (
     PostgresIdempotencyResultStore,
     PostgresProviderMessageReceiptStore,
+    PostgresTransportDeliveryStore,
 )
 from ..persistence.postgres.w1_runtime_state_port import PostgresW1RuntimeStatePort
 from .config import RuntimeConfig
@@ -32,6 +33,7 @@ class DurableW1SessionRuntime:
     identity_binding_store: PostgresIdentityBindingStore
     receipt_store: PostgresProviderMessageReceiptStore
     idempotency_store: PostgresIdempotencyResultStore
+    delivery_store: PostgresTransportDeliveryStore
     state_port: PostgresW1RuntimeStatePort
 
 
@@ -50,6 +52,7 @@ def compose_durable_w1_session_runtime(
     identity_binding_store = PostgresIdentityBindingStore(connection_factory)
     receipt_store = PostgresProviderMessageReceiptStore(connection_factory)
     idempotency_store = PostgresIdempotencyResultStore(connection_factory)
+    delivery_store = PostgresTransportDeliveryStore(connection_factory)
 
     locator_key_ring = LocatorKeyRing.from_environment(environ)
     xbos_context, xbos_catalog = compose_real_xbos_boundaries(runtime_config)
@@ -61,6 +64,7 @@ def compose_durable_w1_session_runtime(
         receipt_store=receipt_store,
         idempotency_store=idempotency_store,
         locator_key_ring=locator_key_ring,
+        delivery_store=delivery_store,
         xbos_context=xbos_context,
         xbos_catalog=xbos_catalog,
         configured_endpoint_ref=runtime_config.meta.phone_number_id,
@@ -73,5 +77,6 @@ def compose_durable_w1_session_runtime(
         identity_binding_store=identity_binding_store,
         receipt_store=receipt_store,
         idempotency_store=idempotency_store,
+        delivery_store=delivery_store,
         state_port=state_port,
     )

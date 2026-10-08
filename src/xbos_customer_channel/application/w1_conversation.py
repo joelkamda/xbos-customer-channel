@@ -6,10 +6,10 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from ..catalog import CatalogItemProjection
+from ..channel_contract import ChannelInboundEvent
 from ..order import ServiceMode
 from ..payment_experience import PaymentMethodCode
 from ..session_state import ChannelState, CustomerSessionSnapshot
-from ..transports.meta_whatsapp import InteractionKind, NormalizedInboundMessage
 from .catalog_service import CatalogQuoteService, CatalogSession
 from .w1_checkout_ux import (
     W1CheckoutResult,
@@ -83,7 +83,7 @@ class W1ConversationRouter:
         session: CustomerSessionSnapshot,
         catalog_session: CatalogSession,
         navigation: W1NavigationCursor,
-        inbound: NormalizedInboundMessage,
+        inbound: ChannelInboundEvent,
         checkout_state: W1CheckoutState | None = None,
     ) -> W1ConversationResult:
         self._assert_server_session(session)
@@ -199,17 +199,28 @@ class W1ConversationRouter:
             raise PermissionError("w1_server_session_binding_required")
 
     @staticmethod
-    def _action(inbound: NormalizedInboundMessage) -> str:
-        if inbound.interactive_reply is not None:
-            if inbound.interactive_reply.kind not in {
-                InteractionKind.BUTTON_REPLY,
-                InteractionKind.LIST_REPLY,
-            }:
-                return "unsupported"
-            return inbound.interactive_reply.reply_id
-        if inbound.text is None:
+    def _action(inbound: ChannelInboundEvent) -> str:
+        if isinstance(inbound, ChannelInboundEvent):
+            if inbound.message_type == "interactive":
+                reply_id = inbound.payload.get("reply_id")
+                return reply_id if isinstance(reply_id, str) and reply_id else "unsupported"
+            if inbound.message_type == "text":
+                text = inbound.payload.get("text")
+                return text.strip().casefold() if isinstance(text, str) and text else "unsupported"
             return "unsupported"
-        return inbound.text.strip().casefold()
+
+        # Compatibility for the pre-R1 normalized provider fixture. This branch
+        # deliberately relies on duck typing so provider classes do not leak into
+        # the Customer Channel domain contract.
+        reply = getattr(inbound, "interactive_reply", None)
+        if reply is not None:
+            kind = getattr(getattr(reply, "kind", None), "value", "")
+            if kind not in {"button_reply", "list_reply"}:
+                return "unsupported"
+            reply_id = getattr(reply, "reply_id", None)
+            return reply_id if isinstance(reply_id, str) and reply_id else "unsupported"
+        text = getattr(inbound, "text", None)
+        return text.strip().casefold() if isinstance(text, str) and text else "unsupported"
 
     def _root(self, catalog_session: CatalogSession) -> W1ConversationResult:
         categories = tuple(

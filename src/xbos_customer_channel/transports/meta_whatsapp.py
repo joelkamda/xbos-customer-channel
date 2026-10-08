@@ -13,8 +13,11 @@ import json
 import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Protocol
+
+from ..channel_contract import ChannelInboundEvent, stable_channel_event_id
 
 
 class InboundRequestRejected(ValueError):
@@ -94,6 +97,54 @@ class NormalizedInboundMessage:
     interactive_reply: NormalizedInteractiveReply | None
     context_provider_message_ref: str | None
     metadata_phone_number_id: str
+
+
+def to_channel_inbound_event(
+    message: NormalizedInboundMessage,
+    *,
+    conversation_ref: str,
+    session_ref: str,
+    merchant_ref: str,
+    subject_ref: str,
+    correlation_ref: str,
+) -> ChannelInboundEvent:
+    """Contain Meta-specific shapes at the adapter edge and emit a provider-neutral event."""
+
+    if message.interactive_reply is not None:
+        payload: dict[str, object] = {
+            "interaction_kind": message.interactive_reply.kind.value,
+            "reply_id": message.interactive_reply.reply_id,
+            "title": message.interactive_reply.title,
+        }
+        message_type = "interactive"
+    else:
+        payload = {"text": message.text or ""}
+        message_type = "text"
+
+    safe_metadata: dict[str, str] = {"provider": "meta_whatsapp"}
+    if message.context_provider_message_ref:
+        safe_metadata["context_provider_message_id"] = message.context_provider_message_ref
+
+    return ChannelInboundEvent(
+        channel_event_id=stable_channel_event_id(
+            channel="whatsapp",
+            recipient_identity=message.metadata_phone_number_id,
+            provider_message_id=message.provider_message_ref,
+        ),
+        provider_message_id=message.provider_message_ref,
+        channel="whatsapp",
+        sender_identity=message.sender.value,
+        recipient_identity=message.metadata_phone_number_id,
+        conversation_ref=conversation_ref,
+        session_ref=session_ref,
+        merchant_ref=merchant_ref,
+        subject_ref=subject_ref,
+        occurred_at=datetime.fromtimestamp(message.occurred_at_epoch, tz=timezone.utc),
+        message_type=message_type,
+        payload=payload,
+        correlation_ref=correlation_ref,
+        safe_provider_metadata=safe_metadata,
+    )
 
 
 class DeliveryState(StrEnum):

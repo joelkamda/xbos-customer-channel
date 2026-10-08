@@ -19,8 +19,8 @@ from xbos_customer_channel.application.w1_checkout_ux import (
     W1CheckoutUX,
     W1CustomerSafePaymentOptions,
 )
-from xbos_customer_channel.application.w1_composition import compose_w1_whatsapp_runtime
 from xbos_customer_channel.application.w1_whatsapp_runtime import W1RuntimeConversationState
+from xbos_customer_channel.transports.meta_w1_runtime import compose_w1_whatsapp_runtime
 from xbos_customer_channel.catalog import AvailabilityState, QuoteLineSnapshot
 from xbos_customer_channel.entry_context import EntryPurpose, ResolvedEntryContext
 from xbos_customer_channel.order import (
