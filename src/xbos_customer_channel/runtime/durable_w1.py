@@ -40,6 +40,7 @@ class DurableW1SessionRuntime:
 def compose_durable_w1_session_runtime(
     runtime_config: RuntimeConfig,
     *,
+    configured_endpoint_ref: str,
     environ: Mapping[str, str] | None = None,
 ) -> DurableW1SessionRuntime:
     """Compose accepted durable stores without opening a DB or calling XBOS."""
@@ -67,7 +68,7 @@ def compose_durable_w1_session_runtime(
         delivery_store=delivery_store,
         xbos_context=xbos_context,
         xbos_catalog=xbos_catalog,
-        configured_endpoint_ref=runtime_config.meta.phone_number_id,
+        configured_endpoint_ref=configured_endpoint_ref,
     )
 
     return DurableW1SessionRuntime(

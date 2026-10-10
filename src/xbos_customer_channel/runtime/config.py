@@ -8,7 +8,6 @@ from ..adapters.xbos_private_http import (
     CATALOG_SERVICE_PRINCIPAL,
     CATALOG_SERVICE_SCOPE,
 )
-from ..transports.meta_whatsapp import MetaWhatsAppConfig
 
 
 XBOS_PRIVATE_BASE_URL_ENV = "XAFPAY_CUSTOMER_CHANNEL_XBOS_PRIVATE_BASE_URL"
@@ -21,9 +20,8 @@ XBOS_CATALOG_BEARER_CREDENTIAL_REFERENCE = f"env:{XBOS_CATALOG_READ_TOKEN_ENV}"
 
 @dataclass(frozen=True, slots=True)
 class RuntimeConfig:
-    """Environment-only runtime configuration; secret values never belong in source."""
+    """Provider-independent runtime configuration; secret values never belong in source."""
 
-    meta: MetaWhatsAppConfig
     xbos_private_base_url: str
     xbos_catalog_adapter: str
     xbos_catalog_service_principal: str
@@ -34,7 +32,6 @@ class RuntimeConfig:
     @classmethod
     def from_environment(cls, environ: Mapping[str, str] | None = None) -> "RuntimeConfig":
         source = os.environ if environ is None else environ
-        meta = MetaWhatsAppConfig.from_environment(source)
         try:
             xbos_base_url = source[XBOS_PRIVATE_BASE_URL_ENV].strip()
         except KeyError:
@@ -70,7 +67,6 @@ class RuntimeConfig:
             raise ValueError("invalid_customer_channel_xbos_catalog_service_scope")
 
         return cls(
-            meta=meta,
             xbos_private_base_url=xbos_base_url.rstrip("/"),
             xbos_catalog_adapter=catalog_adapter,
             xbos_catalog_service_principal=principal,

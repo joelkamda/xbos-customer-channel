@@ -9,6 +9,7 @@ from ..application.w1_composition import XBOSW1ContractUnavailable
 from ..persistence.postgres.schema import DATABASE_URL_ENV
 from ..transports.meta_whatsapp import (
     InvalidWebhookSignature,
+    MetaWhatsAppConfig,
     MetaWhatsAppInboundAdapter,
     MissingWebhookSignature,
     ProviderPayloadRejected,
@@ -36,9 +37,21 @@ def _config() -> RuntimeConfig:
         ) from None
 
 
+def _meta_config() -> MetaWhatsAppConfig:
+    try:
+        return MetaWhatsAppConfig.from_environment()
+    except ValueError:
+        raise HTTPException(
+            status_code=503,
+            detail="provider_configuration_unavailable",
+        ) from None
+
+
 def _materialize_durable_w1_session_runtime(
     request: Request,
     config: RuntimeConfig,
+    *,
+    configured_endpoint_ref: str,
 ) -> DurableW1SessionRuntime | None:
     """Bind durable W1/session state only when the canonical DB key is present."""
 
@@ -46,7 +59,10 @@ def _materialize_durable_w1_session_runtime(
         return None
 
     try:
-        runtime = compose_durable_w1_session_runtime(config)
+        runtime = compose_durable_w1_session_runtime(
+            config,
+            configured_endpoint_ref=configured_endpoint_ref,
+        )
     except (ValueError, XBOSW1ContractUnavailable):
         raise HTTPException(
             status_code=503,
@@ -72,7 +88,7 @@ def verify_meta_subscription(
     verify_token: str | None = Query(default=None, alias="hub.verify_token"),
     challenge: str | None = Query(default=None, alias="hub.challenge"),
 ) -> PlainTextResponse:
-    inbound = MetaWhatsAppInboundAdapter(_config().meta)
+    inbound = MetaWhatsAppInboundAdapter(_meta_config())
     accepted = inbound.verify_subscription(
         mode=mode,
         verify_token=verify_token,
@@ -89,14 +105,13 @@ def verify_meta_subscription(
 @app.post("/webhooks/meta/whatsapp")
 async def receive_meta_callback(request: Request) -> JSONResponse:
     raw_body = await request.body()
-    signature = request.headers.get("X-Hub-Signature-256")
-    config = _config()
-    inbound = MetaWhatsAppInboundAdapter(config.meta)
+    meta_config = _meta_config()
+    inbound = MetaWhatsAppInboundAdapter(meta_config)
 
     try:
         inbound.receive(
             raw_body=raw_body,
-            signature=signature,
+            signature=request.headers.get("X-Hub-Signature-256"),
         )
     except (MissingWebhookSignature, InvalidWebhookSignature):
         raise HTTPException(
@@ -109,7 +124,12 @@ async def receive_meta_callback(request: Request) -> JSONResponse:
             detail="invalid_webhook_payload",
         ) from None
 
-    _materialize_durable_w1_session_runtime(request, config)
+    config = _config()
+    _materialize_durable_w1_session_runtime(
+        request,
+        config,
+        configured_endpoint_ref=meta_config.phone_number_id,
+    )
 
     return JSONResponse(
         {

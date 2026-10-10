@@ -120,6 +120,7 @@ class DurableW1RuntimeMaterializationTests(unittest.TestCase):
         ):
             runtime = compose_durable_w1_session_runtime(
                 runtime_config,
+                configured_endpoint_ref=ENV["META_WHATSAPP_PHONE_NUMBER_ID"],
                 environ=ENV,
             )
 
@@ -134,6 +135,7 @@ class DurableW1RuntimeMaterializationTests(unittest.TestCase):
     def test_same_canonical_database_config_feeds_all_durable_stores(self) -> None:
         runtime = compose_durable_w1_session_runtime(
             RuntimeConfig.from_environment(ENV),
+            configured_endpoint_ref=ENV["META_WHATSAPP_PHONE_NUMBER_ID"],
             environ=ENV,
         )
 
