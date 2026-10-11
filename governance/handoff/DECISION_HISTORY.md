@@ -110,3 +110,87 @@ WHY=THE_LIVE_DOMAIN_LINEAGE_ADVANCED_BEYOND_THE_STORED_XC8_POINTERS_AND_IMPLEMEN
 SUPERSEDES=NONE_HISTORICAL_CHANNEL_GOV_001_THROUGH_009_PRESERVED
 AFFECTS=governance/handoff/LIVING_HANDOFF.md;governance/handoff/EVIDENCE_INDEX.md;governance/handoff/DECISION_HISTORY.md;future_XC9_R1_authorization
 REOPEN_AUTHORIZED=NO
+
+DECISION_ID=CHANNEL-GOV-011
+DATE=2026-10-09
+LANE=CUSTOMER_CHANNEL
+TRANCHE=CC-WA-ORDER-GOV-SYNC-R1
+QUESTION=What is the Customer Channel program state after R1/R2 acceptance while XBOS hosted WND compatibility remains blocked?
+DECISION=Install PROGRAM_STATE=CC_WA_ORDER_R1_R2_PASS_ACCEPTED_WAITING_ON_XBOS_HOSTED_COMPATIBILITY and ACTIVE_TRANCHE=DEPENDENCY_HOLD. CC-WA-ORDER-R1 and CC-WA-ORDER-R2 are PASS_ACCEPTED. CC-WA-ORDER-R3A and CC-WA-ORDER-R3B remain HOLD. WND-DEMO-CC-COMPAT-R3 is BLOCKED_ACCEPTED on HOSTED_SOURCE_STATE_SCHEMA_EQUIVALENCE_MISMATCH and WND-DEMO-CC-COMPAT-R3-R1 is the active XBOS read-only forensic child. Expected hosted WND context references are for future validation only and are not authorized for Customer Channel session use until WND-DEMO-CC-COMPAT-R3=PASS_ACCEPTED.
+WHY=Customer Channel had no defect requiring implementation at that edge. Recording the dependency hold prevented stale governance from incorrectly authorizing implementation or using expected hosted references before XBOS acceptance.
+SUPERSEDES=CHANNEL-GOV-010_AS_CURRENT_MOVING_PROGRAM_STATE_ONLY
+PRESERVES=CHANNEL-GOV-001_THROUGH_010;IMMUTABLE_FOUNDATION_HISTORY
+AFFECTS=governance/handoff/LIVING_HANDOFF.md;governance/handoff/EVIDENCE_INDEX.md;governance/handoff/DECISION_HISTORY.md
+IMPLEMENTATION_AUTHORIZED=NO_AT_THAT_EDGE
+RUNTIME_MUTATION_AUTHORIZED=NO_AT_THAT_EDGE
+NEXT_ELIGIBLE_TRANCHE=CC-WA-ORDER-R3A
+RELEASE_CONDITION=WND-DEMO-CC-COMPAT-R3_PASS_ACCEPTED
+RETURN_TO=PCR
+REOPEN_AUTHORIZED=NO
+
+DECISION_ID=CHANNEL-GOV-012
+DATE=2026-10-10
+LANE=CUSTOMER_CHANNEL
+TRANCHE=CC-WA-ORDER-R3A-R1-R2-C2
+QUESTION=How must primary Customer Channel runtime configuration treat Meta WhatsApp provider configuration?
+DECISION=PCR accepted source successor 65cb548cabc41a41230b23186f95fab75bdfe0e8 / tree fc917799b83db80259f5e95445bccb647ad28361. Primary RuntimeConfig is provider-independent for process boot, health, base Customer Channel configuration, and private XBOS composition. MetaWhatsAppConfig remains mandatory only at Meta-specific boundaries and fails closed when absent. Durable Meta W1 receives the exact explicit Meta phone_number_id rather than reading Meta config implicitly.
+WHY=The prior blocker was caused by transport-specific Meta configuration being coupled to primary runtime configuration. The bounded C2 repair removed that coupling without weakening Meta fail-closed behavior or real-XBOS composition.
+SUPERSEDES=CHANNEL-GOV-011_AS_CURRENT_ACCEPTED_SOURCE_HEAD_ONLY
+PRESERVES=CHANNEL-GOV-001_THROUGH_011
+AFFECTS=governance/handoff/LIVING_HANDOFF.md;governance/handoff/EVIDENCE_INDEX.md
+REOPEN_AUTHORIZED=NO
+
+DECISION_ID=CHANNEL-GOV-013
+DATE=2026-10-10
+LANE=CUSTOMER_CHANNEL
+TRANCHE=CC-WA-ORDER-R3A-R1-R2-C3
+QUESTION=Is the accepted C2 source actually aligned and live on Customer Channel staging?
+DECISION=YES. PCR accepted runtime alignment of xafpay-customer-channel-staging to branch cc/wa-order-r2-twilio-demo-adapter and exact SHA 65cb548cabc41a41230b23186f95fab75bdfe0e8. Exactly one deployment was consumed, health passed, idle stability passed, auto-deploy remained off, and no commerce/provider/financial effect occurred.
+WHY=R3A could not proceed until the accepted source existed as actual staging runtime rather than only as published Git state.
+SUPERSEDES=NONE
+AFFECTS=governance/handoff/LIVING_HANDOFF.md;governance/handoff/EVIDENCE_INDEX.md
+REOPEN_AUTHORIZED=NO
+
+DECISION_ID=CHANNEL-GOV-014
+DATE=2026-10-11
+LANE=CUSTOMER_CHANNEL
+TRANCHE=WND-DEMO-CC-COMPAT-R4
+QUESTION=What is the accepted cross-lane context-attestation contract for the frozen 65cb548 Customer Channel client?
+DECISION=PCR accepted WND rich context-attestation compatibility while preserving the WND minimal contract. Customer Channel continues to send schema xafpay.customer-channel.xbos-context-attestation.v1 and parse the rich response. For the controlled R3A fixture, EntryPurpose=merchant_discovery is explicit PCR authority and is not derived from XBOS purpose_code restaurant.customer_channel.checkout. Current WND live deploy is dep-db5mrmvlk1mc73ahv280 on source 4b88e58e79b19b4379386b2f2ab206a2d8956a2b.
+WHY=The two purpose values represent distinct semantic dimensions and must not be collapsed. Compatibility belongs at the cross-lane contract seam, not in an invented Customer Channel mapping.
+SUPERSEDES=NONE
+AFFECTS=governance/handoff/LIVING_HANDOFF.md;governance/handoff/EVIDENCE_INDEX.md
+REOPEN_AUTHORIZED=NO
+
+DECISION_ID=CHANNEL-GOV-015
+DATE=2026-10-11
+LANE=CUSTOMER_CHANNEL
+TRANCHE=CC-WA-ORDER-R3A-O1
+QUESTION=Did the controlled durable Customer Channel bootstrap succeed after WND rich compatibility became live?
+DECISION=YES. PCR accepted the exact recovered O1 session sess_GViBCu9hvADwPTYxu7zxpXQkBuq4pNpOi5N3Kgz4wZs as PASS_ACCEPTED. The session is generation 0, security-bound, purpose merchant_discovery, and bound to the accepted merchant/location/context. Exactly one conversation, one identity binding, and one session were created. No second bootstrap is permitted and the fixture must not be deleted merely to replay O1.
+WHY=The interrupted one-off execution had already crossed the authorized write boundary and completed the O1 postwrite proof. Creating another fixture would violate the one-session law.
+SUPERSEDES=NONE
+AFFECTS=governance/handoff/LIVING_HANDOFF.md;governance/handoff/EVIDENCE_INDEX.md
+REOPEN_AUTHORIZED=NO
+
+DECISION_ID=CHANNEL-GOV-016
+DATE=2026-10-11
+LANE=CUSTOMER_CHANNEL
+TRANCHE=CC-WA-ORDER-R3A
+QUESTION=Which R3A portions are closed, and where is the remaining blocker?
+DECISION=Trusted Customer Channel session, live rich reattestation, and SHOW_CATALOG are PASS_ACCEPTED. The authoritative catalog is one section with Chicken, Ndole, and Eru at 2500 XAF each, currency XAF, price_code retail. R3A is BLOCKED_ACCEPTED before draft creation because the checkout service credential binding and an explicit accepted fulfillment context were not yet closed. Draft route call count remains zero and no business effect occurred.
+WHY=The accepted WND facade has a separate checkout service-auth boundary and requires an explicit service_mode. Catalog-reader authority cannot substitute for checkout authority and fulfillment cannot be inferred from merchant_discovery or XBOS purpose_code.
+SUPERSEDES=NONE
+AFFECTS=governance/handoff/LIVING_HANDOFF.md;governance/handoff/EVIDENCE_INDEX.md
+REOPEN_AUTHORIZED=NO
+
+DECISION_ID=CHANNEL-GOV-017
+DATE=2026-10-11
+LANE=CUSTOMER_CHANNEL
+TRANCHE=CC-WA-ORDER-R3A-D1
+QUESTION=How will PCR close the R3A draft preconditions without redesigning the accepted facade?
+DECISION=D1 is authorized. It may reconcile only an existing checkout service credential for the accepted customer-channel service identity and permission restaurant.customer_channel.checkout, never generate or rotate a token, never collapse catalog and checkout credentials, and never expose raw credential/digest material. PCR explicitly selects service_mode=dine_in and authorizes read-only discovery of one existing active table at tenant 2 / CM001 and the accepted location. If multiple eligible tables exist, choose the lowest canonical resource ID. D1 itself creates no draft or business effect. D1 execution remains held until CUSTOMER-CHANNEL-GOV-CONTINUITY-R2 is PCR-accepted.
+WHY=The accepted WND facade has only dine_in, takeaway, and delivery. Dine-in is the lowest-impact existing contract because it can use an existing restaurant resource without manufacturing customer contact, address, provider identity, or Party.
+SUPERSEDES=NONE
+AFFECTS=governance/handoff/LIVING_HANDOFF.md;governance/handoff/EVIDENCE_INDEX.md
+REOPEN_AUTHORIZED=NO
