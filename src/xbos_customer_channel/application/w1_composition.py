@@ -14,7 +14,13 @@ from ..adapters.real_xbos_catalog import (
 )
 from ..adapters.real_xbos_context import RealXBOSContextAdapter
 from ..adapters.xbos_private_http import PrivateXBOSHTTPClient
-from ..ports import XBOSCatalogPort, XBOSContextPort
+from ..adapters.wnd_merchant_http import (
+    WNDMerchantBinding,
+    WNDMerchantPrivateTransport,
+    WNDMerchantAdmissionRequired,
+)
+from ..adapters.wnd_r1_order_port import WNDMerchantOrderPort
+from ..ports import XBOSCatalogPort, XBOSContextPort, XBOSOrderPort
 from ..runtime.config import RuntimeConfig
 
 CUSTOMER_SAFE_MERCHANT_LOCATION_MENU_PRICE_AVAILABILITY_PROJECTION = (
@@ -91,3 +97,43 @@ def require_real_xbos_w1_contract(
     """Typed boundary only; do not compose a fake or infer an XBOS HTTP API shape."""
     del context, catalog
     raise XBOSW1ContractUnavailable(REAL_XBOS_ADAPTER_STATE)
+
+
+def compose_wnd_merchant_order_port(
+    *,
+    enabled: bool = False,
+    merchant_identity_admitted: bool = False,
+    service_identity_admitted: bool = False,
+    binding: WNDMerchantBinding,
+    base_url: str,
+    expected_host: str,
+    wnd_service_bearer: str,
+    wnd_service_credential_ref: str,
+    http_client: httpx.Client | None = None,
+) -> XBOSOrderPort:
+    """Default-OFF staged WND private order source, NOT live registration.
+
+    Caller must supply source-qualified merchant and WND service authority.
+    The WND backend rechecks bearer, context, tenant and merchant for each
+    request. The connected Gateway merchant/payment credentials are distinct
+    and cannot be used as a WND service bearer.
+    """
+    if not enabled:
+        raise XBOSW1ContractUnavailable("WND_MERCHANT_ORDER_FEATURE_DISABLED")
+    if not merchant_identity_admitted or not service_identity_admitted:
+        raise XBOSW1ContractUnavailable("WND_MERCHANT_AND_SERVICE_AUTH_NOT_ADMITTED")
+    if wnd_service_credential_ref.startswith(("gateway:", "mch_", "pay_")):
+        raise XBOSW1ContractUnavailable("GATEWAY_CREDENTIAL_CANNOT_BE_WND_BEARER")
+    try:
+        transport = WNDMerchantPrivateTransport(
+            enabled=True,
+            base_url=base_url,
+            expected_host=expected_host,
+            bearer_token=wnd_service_bearer,
+            credential_ref=wnd_service_credential_ref,
+            binding=binding,
+            client=http_client,
+        )
+    except WNDMerchantAdmissionRequired as exc:
+        raise XBOSW1ContractUnavailable("WND_PRIVATE_SERVICE_BINDING_NOT_READY") from exc
+    return WNDMerchantOrderPort(transport=transport)
