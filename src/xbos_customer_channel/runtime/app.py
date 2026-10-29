@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 from ..application.w1_composition import XBOSW1ContractUnavailable
 from ..persistence.postgres.schema import DATABASE_URL_ENV
+from ..transports.twilio_signed_ingress import (
+    IngressNotConfigured,
+    IngressRejected,
+    LocalNoCommerceReplayLedger,
+    SandboxIngressConfig,
+    verify_sandbox_inbound,
+)
 from ..transports.meta_whatsapp import (
     InvalidWebhookSignature,
     MetaWhatsAppConfig,
@@ -25,6 +33,9 @@ app = FastAPI(
     title="XafPay Customer Channel",
     version="xc9-h1r1",
 )
+
+# This is an ingress-only process receipt guard, NOT a durable order CAS.
+_twilio_ingress_receipts = LocalNoCommerceReplayLedger()
 
 
 def _config() -> RuntimeConfig:
@@ -80,6 +91,47 @@ def health() -> dict[str, str]:
         "service": "xbos-customer-channel",
         "w1_dispatch": "disabled",
     }
+
+
+@app.post("/webhooks/twilio/whatsapp")
+async def receive_signed_sandbox_ingress(request: Request) -> PlainTextResponse:
+    """CEO-only signed ingress proof; no customer order, reply or payment."""
+
+    try:
+        settings = SandboxIngressConfig.from_environment()
+    except IngressNotConfigured:
+        raise HTTPException(
+            status_code=503, detail="sandbox_ingress_unavailable"
+        ) from None
+    try:
+        # Verify configured public host; never use untrusted forwarded host
+        # or scheme to construct the signature URL.
+        verified = verify_sandbox_inbound(
+            settings=settings,
+            ledger=_twilio_ingress_receipts,
+            raw_body=await request.body(),
+            content_type=request.headers.get("Content-Type"),
+            signature=request.headers.get("X-Twilio-Signature"),
+            request_host=request.headers.get("Host"),
+            forwarded_proto=request.headers.get("X-Forwarded-Proto"),
+            now=datetime.now(timezone.utc),
+        )
+    except IngressNotConfigured:
+        raise HTTPException(
+            status_code=503, detail="sandbox_ingress_unavailable"
+        ) from None
+    except IngressRejected:
+        raise HTTPException(
+            status_code=403, detail="sandbox_request_rejected"
+        ) from None
+    # Never expose a sender, provider message ID, bearer or event correlation
+    # in the HTTP response. An empty TwiML response sends no WhatsApp reply.
+    return PlainTextResponse(
+        "<Response></Response>",
+        media_type="application/xml",
+        status_code=200,
+        headers={"X-XafPay-Ingress": verified.disposition},
+    )
 
 
 @app.get("/webhooks/meta/whatsapp", response_class=PlainTextResponse)

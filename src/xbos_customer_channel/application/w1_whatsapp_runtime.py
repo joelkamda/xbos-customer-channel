@@ -107,7 +107,7 @@ class W1WNDMerchantOrderDispatch:
         handle = command.payload["confirmation_ref"]
         supplied_key = command.payload["client_submit_ref"]
         # A server-provided confirmation handle must be bound to the same
-        # deterministic command. Never use Twilio provider ID as an order ID.
+        # deterministic command. Never use a provider ID as an order ID.
         expected_key = "cc-submit:" + event.channel_event_id
         if (
             not isinstance(handle, str) or not handle.strip()
