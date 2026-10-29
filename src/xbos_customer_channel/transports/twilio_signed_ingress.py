@@ -147,7 +147,17 @@ class LocalNoCommerceReplayLedger:
 class VerifiedSandboxIngress:
     disposition: str
     event_digest: str  # non-reversible correlation, no PII or provider SID
+    action: str
     merchant_dispatch_enabled: bool = False
+
+
+def _r5_test_action(body: str) -> str:
+    normalized = " ".join(body.strip().casefold().split())
+    if normalized == "hello wnd":
+        return "greeting"
+    if normalized == "order wnd test":
+        return "test_order"
+    return "receipt_only"
 
 
 def verify_sandbox_inbound(
@@ -207,6 +217,8 @@ def verify_sandbox_inbound(
     if outcome in ("collision", "unavailable"):
         raise IngressRejected("provider_receipt_conflict_or_capacity")
     return VerifiedSandboxIngress(
-        disposition=outcome, event_digest=key[:20],
+        disposition=outcome,
+        event_digest=key[:20],
+        action=_r5_test_action(message.body),
         merchant_dispatch_enabled=False,
     )

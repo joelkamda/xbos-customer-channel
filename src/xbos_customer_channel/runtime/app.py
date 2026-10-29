@@ -6,6 +6,11 @@ from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 
+from ..application.p0d_r5_test_only_bridge import (
+    P0DR5BridgeNotConfigured,
+    P0DR5BridgeRejected,
+    dispatch_p0d_r5_test_order,
+)
 from ..application.w1_composition import XBOSW1ContractUnavailable
 from ..persistence.postgres.schema import DATABASE_URL_ENV
 from ..transports.twilio_signed_ingress import (
@@ -124,13 +129,34 @@ async def receive_signed_sandbox_ingress(request: Request) -> PlainTextResponse:
         raise HTTPException(
             status_code=403, detail="sandbox_request_rejected"
         ) from None
-    # Never expose a sender, provider message ID, bearer or event correlation
-    # in the HTTP response. An empty TwiML response sends no WhatsApp reply.
+    commerce_state = "receipt_only"
+    if verified.disposition == "duplicate":
+        commerce_state = "duplicate_no_dispatch"
+    elif verified.action == "test_order":
+        try:
+            dispatch_p0d_r5_test_order(event_digest=verified.event_digest)
+        except P0DR5BridgeNotConfigured:
+            raise HTTPException(
+                status_code=503, detail="trusted_wnd_bridge_unavailable"
+            ) from None
+        except P0DR5BridgeRejected:
+            raise HTTPException(
+                status_code=403, detail="trusted_wnd_bridge_rejected"
+            ) from None
+        commerce_state = "order_submitted"
+
+    # Never expose a sender, provider message ID, bearer, order UUID or event
+    # correlation in the HTTP response. "Hello WND" is receipt-only; only the
+    # exact explicit R5 test-order command can reach the gated WND bridge.
     return PlainTextResponse(
         "<Response></Response>",
         media_type="application/xml",
         status_code=200,
-        headers={"X-XafPay-Ingress": verified.disposition},
+        headers={
+            "X-XafPay-Ingress": verified.disposition,
+            "X-XafPay-R5-Action": verified.action,
+            "X-XafPay-R5-Commerce": commerce_state,
+        },
     )
 
 
