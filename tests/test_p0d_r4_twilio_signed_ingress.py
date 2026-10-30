@@ -34,6 +34,23 @@ TESTER = "whatsapp:+237600000001"
 NOW = datetime(2026, 10, 29, 5, 30, tzinfo=timezone.utc)
 
 
+@pytest.fixture(autouse=True)
+def historical_sandbox_clock(monkeypatch):
+    """Freeze the R4 historical test scenario only, never the hosted app."""
+    import xbos_customer_channel.runtime.app as app_runtime
+    import xbos_customer_channel.transports.twilio_signed_ingress as ingress
+
+    class ScenarioClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 10, 29, 6, 0, tzinfo=timezone.utc).astimezone(
+                tz or timezone.utc
+            )
+
+    monkeypatch.setattr(app_runtime, "datetime", ScenarioClock)
+    monkeypatch.setattr(ingress, "datetime", ScenarioClock)
+
+
 def env(*, enabled: bool = True, expires: str = "2026-10-30T05:30:00Z"):
     values = {
         "TWILIO_ACCOUNT_SID": ACCOUNT_SID,

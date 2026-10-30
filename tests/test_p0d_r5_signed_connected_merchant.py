@@ -38,6 +38,21 @@ SANDBOX_SENDER = "whatsapp:+14155238886"
 TESTER = "whatsapp:+237600000001"
 NOW = datetime(2026, 10, 29, 6, 30, tzinfo=UTC)
 
+# Historical fake-only test messages have a fixed October 30 join expiry.
+# Freeze only these tests at the intended October 29 scenario; never change
+# the real application clock or extend the genuine Twilio Sandbox membership.
+@pytest.fixture(autouse=True)
+def historical_sandbox_clock(monkeypatch):
+    import xbos_customer_channel.transports.twilio_signed_ingress as ingress
+
+    class ScenarioClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 10, 29, 7, 0, tzinfo=UTC).astimezone(tz or UTC)
+
+    monkeypatch.setattr(app_module, "datetime", ScenarioClock)
+    monkeypatch.setattr(ingress, "datetime", ScenarioClock)
+
 MERCHANT = "10000000-0000-4000-8000-000000000003"
 LOCATION = "10000000-0000-4000-8000-000000000002"
 CONTEXT = "10000000-0000-4000-8000-000000000008"

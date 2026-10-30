@@ -149,6 +149,7 @@ class VerifiedSandboxIngress:
     event_digest: str  # non-reversible correlation, no PII or provider SID
     action: str
     merchant_dispatch_enabled: bool = False
+    receipt_key: str | None = None  # internal hash, never public response
 
 
 def _r5_test_action(body: str) -> str:
@@ -221,4 +222,5 @@ def verify_sandbox_inbound(
         event_digest=key[:20],
         action=_r5_test_action(message.body),
         merchant_dispatch_enabled=False,
+        receipt_key=key,
     )
