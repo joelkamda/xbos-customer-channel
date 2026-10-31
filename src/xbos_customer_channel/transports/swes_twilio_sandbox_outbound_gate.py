@@ -59,7 +59,8 @@ class SWESSandboxStatusSender:
         self._evidence = evidence
         self._transport = transport
 
-    def send(self, *, intent: ChannelOutboundIntent, now: datetime) -> TwilioSendResult:
+    def authorize(self, *, intent: ChannelOutboundIntent, now: datetime) -> None:
+        """Fail closed before reserving an outbound delivery or calling a provider."""
         policy = self._policy
         if not policy.enabled or not policy.nonfinancial_only or not policy.tester_consented:
             raise SWESSandboxOutboundNotAdmitted("sandbox_status_sender_disabled")
@@ -77,4 +78,7 @@ class SWESSandboxStatusSender:
             raise SWESSandboxOutboundNotAdmitted("outbound_sender_recipient_or_purpose_not_admitted")
         if not self._evidence.verify(intent=intent):
             raise SWESSandboxOutboundNotAdmitted("authoritative_status_evidence_required")
+
+    def send(self, *, intent: ChannelOutboundIntent, now: datetime) -> TwilioSendResult:
+        self.authorize(intent=intent, now=now)
         return self._transport.send(intent)
