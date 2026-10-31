@@ -36,6 +36,38 @@ class HostedTwilioReceiptLedger:
         row = cursor.fetchone()
         if row is None or row["name"] != STAGING_DATABASE:
             raise PostgresUnavailable("not_approved_cc_staging_database")
+        cursor.execute("""
+            SELECT rolname, rolsuper, rolcreaterole, rolcreatedb,
+                   rolbypassrls, rolreplication,
+                   session_user AS authenticated_role
+            FROM pg_roles WHERE rolname = current_user
+        """)
+        role = cursor.fetchone()
+        if (not role or any(role.get(flag) for flag in (
+            "rolsuper", "rolcreaterole", "rolcreatedb",
+            "rolbypassrls", "rolreplication"
+        )) or role.get("authenticated_role") != role.get("rolname")
+        or not str(role.get("rolname", "")).startswith("cc_swes_receipt_")):
+            raise PostgresUnavailable("receipt_role_not_least_privileged")
+        cursor.execute("""
+            SELECT has_schema_privilege(current_user, 'public', 'USAGE') AS schema_usage,
+                   has_schema_privilege(current_user, 'public', 'CREATE') AS schema_create,
+                   has_table_privilege(current_user, 'public.provider_message_receipt', 'SELECT') AS can_select,
+                   has_table_privilege(current_user, 'public.provider_message_receipt', 'INSERT') AS can_insert,
+                   has_table_privilege(current_user, 'public.provider_message_receipt', 'UPDATE') AS can_update,
+                   has_table_privilege(current_user, 'public.provider_message_receipt', 'DELETE') AS can_delete,
+                   has_table_privilege(current_user, 'public.provider_message_receipt', 'TRUNCATE') AS can_truncate,
+                   has_table_privilege(current_user, 'public.provider_message_receipt', 'REFERENCES') AS can_reference,
+                   has_table_privilege(current_user, 'public.provider_message_receipt', 'TRIGGER') AS can_trigger
+        """)
+        grants = cursor.fetchone()
+        if (not grants or not all(grants.get(key) is True for key in (
+            "schema_usage", "can_select", "can_insert", "can_update"
+        )) or any(grants.get(key) is not False for key in (
+            "schema_create", "can_delete", "can_truncate",
+            "can_reference", "can_trigger"
+        ))):
+            raise PostgresUnavailable("receipt_table_privilege_scope_not_admitted")
 
     def check_and_claim(self, *, key: str, digest: str, now_epoch: int) -> str:
         if (

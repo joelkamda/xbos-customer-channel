@@ -45,6 +45,16 @@ class FakeCursor:
     def fetchone(self):
         if "SELECT current_database()" in self.state:
             return {"name": self.db}
+        if "FROM pg_roles WHERE rolname = current_user" in self.state:
+            return {"rolname": "cc_swes_receipt_test", "rolsuper": False,
+                    "rolcreaterole": False, "rolcreatedb": False,
+                    "rolbypassrls": False, "rolreplication": False,
+                    "authenticated_role": "cc_swes_receipt_test"}
+        if "SELECT has_schema_privilege" in self.state:
+            return {"schema_usage": True, "schema_create": False,
+                    "can_select": True, "can_insert": True, "can_update": True,
+                    "can_delete": False, "can_truncate": False,
+                    "can_reference": False, "can_trigger": False}
         if "INSERT INTO provider_message_receipt" in self.state:
             return {"payload_digest": DIGEST} if self.prior is None else None
         if "SELECT payload_digest,processing_state" in self.state:
@@ -127,6 +137,58 @@ def test_claim_finish_is_postgres_guarded(success):
     ledger = unit.HostedTwilioReceiptLedger(lambda: FakeConnection(cursor))
     with patch.object(unit, "transaction", fake_transaction):
         ledger.finish_claim(key=KEY, now_epoch=1000, success=success)
-    assert len(cursor.statements) == 2
+    assert len(cursor.statements) == 4
     assert "processing_state=%s" in cursor.statements[-1][0]
     assert cursor.statements[-1][1][0] == ("processed" if success else "failed_retryable")
+
+
+@pytest.mark.parametrize("role_overrides", [
+    {"rolname": "xafpay_customer_channel_staging_db_user"},
+    {"rolsuper": True},
+    {"rolcreaterole": True},
+    {"rolcreatedb": True},
+    {"rolbypassrls": True},
+    {"rolreplication": True},
+    {"authenticated_role": "xafpay_customer_channel_staging_db_user"},
+])
+def test_privileged_or_unapproved_receipt_role_fails_before_write(role_overrides):
+    class RoleCursor(FakeCursor):
+        def fetchone(self):
+            if "FROM pg_roles WHERE rolname = current_user" in self.state:
+                role = {"rolname": "cc_swes_receipt_test", "rolsuper": False,
+                        "rolcreaterole": False, "rolcreatedb": False,
+                        "rolbypassrls": False, "rolreplication": False, "authenticated_role": "cc_swes_receipt_test"}
+                role.update(role_overrides)
+                return role
+            return super().fetchone()
+    cursor = RoleCursor()
+    ledger = unit.HostedTwilioReceiptLedger(lambda: FakeConnection(cursor))
+    with patch.object(unit, "transaction", fake_transaction):
+        with pytest.raises(PostgresUnavailable, match="receipt_role_not_least_privileged"):
+            ledger.check_and_claim(key=KEY, digest=DIGEST, now_epoch=1000)
+    assert not any("INSERT INTO" in sql or "UPDATE " in sql
+                   for sql, _ in cursor.statements)
+
+
+@pytest.mark.parametrize("grant_override", [
+    {"schema_usage": False}, {"schema_create": True},
+    {"can_select": False}, {"can_insert": False}, {"can_update": False},
+    {"can_delete": True}, {"can_truncate": True},
+    {"can_reference": True}, {"can_trigger": True},
+    {"can_update": None},
+])
+def test_excessive_or_insufficient_receipt_permissions_fail_before_write(grant_override):
+    class PermissionCursor(FakeCursor):
+        def fetchone(self):
+            if "SELECT has_schema_privilege" in self.state:
+                grants = super().fetchone()
+                grants.update(grant_override)
+                return grants
+            return super().fetchone()
+    cursor = PermissionCursor()
+    ledger = unit.HostedTwilioReceiptLedger(lambda: FakeConnection(cursor))
+    with patch.object(unit, "transaction", fake_transaction):
+        with pytest.raises(PostgresUnavailable, match="receipt_table_privilege_scope_not_admitted"):
+            ledger.check_and_claim(key=KEY, digest=DIGEST, now_epoch=1000)
+    assert not any("INSERT INTO" in statement or "UPDATE " in statement
+                   for statement, _ in cursor.statements)

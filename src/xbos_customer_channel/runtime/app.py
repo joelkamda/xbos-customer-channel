@@ -55,8 +55,17 @@ def _sandbox_receipt_ledger():
         return _twilio_ingress_receipts
     if os.environ.get("CC_HOSTED_SANDBOX_DURABLE_INGRESS_ENABLED") != "1":
         raise IngressNotConfigured("hosted_durable_receipt_not_admitted")
+    # Never reuse the general application connection: it may still carry
+    # schema-owner privileges. A distinct, restricted receipt identity is
+    # required before hosted durable processing can be enabled.
+    receipt_url = os.environ.get("CC_HOSTED_SANDBOX_RECEIPT_DATABASE_URL", "").strip()
+    general_url = os.environ.get(DATABASE_URL_ENV, "").strip()
+    if not receipt_url or (general_url and receipt_url == general_url):
+        raise IngressNotConfigured("restricted_receipt_identity_not_admitted")
     try:
-        db_config = DatabaseConfig.from_environment()
+        db_config = DatabaseConfig.from_environment(
+            {DATABASE_URL_ENV: receipt_url}
+        )
     except ValueError as exc:
         raise IngressNotConfigured("staging_receipt_database_unavailable") from exc
     return HostedTwilioReceiptLedger(psycopg_connection_factory(db_config))
@@ -193,11 +202,24 @@ async def receive_signed_sandbox_ingress(request: Request) -> PlainTextResponse:
         commerce_state = "order_submitted"
     finish_durable(True)
 
-    # Never expose a sender, provider message ID, bearer, order UUID or event
-    # correlation in the HTTP response. "Hello WND" is receipt-only; only the
-    # exact explicit R5 test-order command can reach the gated WND bridge.
+    # Twilio TwiML response: disabled by default, TEST-only, only for an
+    # authenticated first greeting whose durable receipt has been finalized.
+    # A duplicate must never trigger another customer-visible message.
+    greeting_reply_enabled = (
+        durable
+        and verified.disposition == "accepted"
+        and verified.action == "greeting"
+        and os.environ.get("CC_TWILIO_SANDBOX_GREETING_REPLY_ENABLED") == "1"
+    )
+    twiml = (
+        "<Response><Message>Welcome to Wine &amp; Dine! "
+        "Your message was received. Reply MENU to explore our menu "
+        "when ordering is enabled.</Message></Response>"
+        if greeting_reply_enabled else "<Response></Response>"
+    )
+    # Never expose sender, SID, bearer, order UUID or correlation.
     return PlainTextResponse(
-        "<Response></Response>",
+        twiml,
         media_type="application/xml",
         status_code=200,
         headers={
