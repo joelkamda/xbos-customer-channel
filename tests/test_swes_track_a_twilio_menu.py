@@ -98,6 +98,7 @@ def run(*, signed=SIGNED, message=MESSAGE, settings=SETTINGS,
     return result, ports, receipts, reader
 
 def test_signed_first_real_bound_catalog_renders_safe_menu():
+    assert TEST_MERCHANT == "4b196022-55a1-548c-b122-f1f9e4b78bea"
     result, sessions, receipts, reader = run()
     assert result.category_count > 0
     assert "Wine &amp; Dine" in result.twiml
@@ -130,7 +131,9 @@ def test_fail_closed_before_reader_on_invalid_provider_or_disabled(overrides):
 
 @pytest.mark.parametrize("overrides", [
     {"tenant_ref":"2"}, {"tenant_ref":"other"},
-    {"merchant_ref":"other"}, {"location_ref":"wrong-location"},
+    {"merchant_ref":"other"},
+    {"merchant_ref":"4b196022-65a1-548c-b122-f1f9e4b78bea"},
+    {"location_ref":"wrong-location"},
     {"context_binding_ref":None}, {"owner_identity_ref":None},
     {"security_binding_complete":False},
     {"expires_at_epoch":int(NOW.timestamp())},

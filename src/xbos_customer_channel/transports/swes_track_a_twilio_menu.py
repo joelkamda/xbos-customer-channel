@@ -31,7 +31,7 @@ from .twilio_whatsapp import (
 )
 
 TEST_TENANT = "910001"
-TEST_MERCHANT = "4b196022-65a1-548c-b122-f1f9e4b78bea"
+TEST_MERCHANT = "4b196022-55a1-548c-b122-f1f9e4b78bea"
 MAX_MESSAGE_AGE = timedelta(minutes=5)
 
 
