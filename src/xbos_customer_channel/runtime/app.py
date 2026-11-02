@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
@@ -12,17 +13,33 @@ from ..application.p0d_r5_test_only_bridge import (
     dispatch_p0d_r5_test_order,
 )
 from ..application.w1_composition import XBOSW1ContractUnavailable
-from ..persistence.postgres.schema import DATABASE_URL_ENV
 from ..persistence.postgres.database import (
     DatabaseConfig,
     PostgresUnavailable,
     psycopg_connection_factory,
 )
 from ..persistence.postgres.hosted_twilio_receipt import HostedTwilioReceiptLedger
+from ..persistence.postgres.schema import DATABASE_URL_ENV
 from ..persistence.postgres.serialization import LocatorKeyRing
+from ..transports.meta_whatsapp import (
+    InvalidWebhookSignature,
+    MetaWhatsAppConfig,
+    MetaWhatsAppInboundAdapter,
+    MissingWebhookSignature,
+    ProviderPayloadRejected,
+)
 from ..transports.swes_r48_signed_sender_binding import (
     SignedSenderBindingUnavailable,
     derive_first_signed_sender_hash,
+)
+from ..transports.swes_r48_verified_event import (
+    VerifiedEventNotAdmitted,
+    build_verified_wnd_event,
+)
+from ..transports.swes_r48_wnd_delivery import (
+    WNDDeliveryUnavailable,
+    WNDEventDeliveryConfig,
+    send_verified_cc_event,
 )
 from ..transports.twilio_signed_ingress import (
     IngressNotConfigured,
@@ -31,20 +48,12 @@ from ..transports.twilio_signed_ingress import (
     SandboxIngressConfig,
     verify_sandbox_inbound,
 )
-from ..transports.meta_whatsapp import (
-    InvalidWebhookSignature,
-    MetaWhatsAppConfig,
-    MetaWhatsAppInboundAdapter,
-    MissingWebhookSignature,
-    ProviderPayloadRejected,
-)
 from .config import RuntimeConfig
 from .durable_w1 import (
     DurableW1SessionRuntime,
     compose_durable_w1_session_runtime,
 )
 from .swes_r48_attestation import router as swes_r48_receipt_router
-
 
 app = FastAPI(
     title="XafPay Customer Channel",
@@ -146,6 +155,11 @@ async def receive_signed_sandbox_ingress(request: Request) -> PlainTextResponse:
             status_code=503, detail="sandbox_ingress_unavailable"
         ) from None
     try:
+        if (
+            os.environ.get("CC_R48_WND_IA0_DELIVERY_ENABLED") == "1"
+            and os.environ.get("CC_R48_SENDER_BINDING_ENABLED") != "1"
+        ):
+            raise IngressNotConfigured("wnd_event_sender_binding_required")
         receipt_ledger = _sandbox_receipt_ledger()
         # Verify configured public host; never use untrusted forwarded host
         # or scheme to construct the signature URL.
@@ -157,7 +171,7 @@ async def receive_signed_sandbox_ingress(request: Request) -> PlainTextResponse:
             signature=request.headers.get("X-Twilio-Signature"),
             request_host=request.headers.get("Host"),
             forwarded_proto=request.headers.get("X-Forwarded-Proto"),
-            now=datetime.now(timezone.utc),
+            now=datetime.now(UTC),
         )
     except IngressNotConfigured:
         raise HTTPException(
@@ -183,7 +197,7 @@ async def receive_signed_sandbox_ingress(request: Request) -> PlainTextResponse:
             try:
                 options = {
                     "key": claim,
-                    "now_epoch": int(datetime.now(timezone.utc).timestamp()),
+                    "now_epoch": int(datetime.now(UTC).timestamp()),
                     "success": success,
                 }
                 if success and sender_binding is not None:
@@ -205,7 +219,7 @@ async def receive_signed_sandbox_ingress(request: Request) -> PlainTextResponse:
                 raw_body=await request.body(),
                 signature=request.headers.get("X-Twilio-Signature"),
                 content_type=request.headers.get("Content-Type"),
-                received_at=datetime.now(timezone.utc),
+                received_at=datetime.now(UTC),
                 key_ring=LocatorKeyRing.from_environment(),
             )
         except (SignedSenderBindingUnavailable, ValueError):
@@ -235,6 +249,43 @@ async def receive_signed_sandbox_ingress(request: Request) -> PlainTextResponse:
             raise
         commerce_state = "order_submitted"
     finish_durable(True)
+
+    # Gated TEST-only IA0 event handoff: no customer order or payment.
+    # Genuine signed duplicates can retry an uncertain HTTPS outcome only
+    # against the SAME first processed sender-bound receipt, before expiry.
+    if os.environ.get("CC_R48_WND_IA0_DELIVERY_ENABLED") == "1":
+        if not durable or verified.action == "test_order":
+            raise HTTPException(status_code=503, detail="wnd_ia0_delivery_unavailable")
+        try:
+            receipt = receipt_ledger.read_processed_first(
+                key=claim, payload_digest=verified.form_payload_digest,
+            )
+            if receipt is None:
+                raise WNDDeliveryUnavailable("first_sender_bound_receipt_missing")
+            real_event = build_verified_wnd_event(
+                settings=settings, verified=verified,
+                raw_body=await request.body(),
+                signature=request.headers.get("X-Twilio-Signature"),
+                content_type=request.headers.get("Content-Type"),
+                received_at=receipt.occurred_at_utc,
+                receipt=receipt,
+                sender_key_ring=LocatorKeyRing.from_environment(),
+                allow_processed_duplicate=True,
+            )
+            await asyncio.to_thread(
+                send_verified_cc_event,
+                event=real_event, receipt=receipt,
+                config=WNDEventDeliveryConfig.from_environment(),
+                now=datetime.now(UTC),
+            )
+        except (PostgresUnavailable, WNDDeliveryUnavailable,
+                VerifiedEventNotAdmitted, ValueError):
+            # HTTP 503 permits a *real provider-signed* redelivery to retry,
+            # preserving the first-row identity and the original 5-min TTL.
+            raise HTTPException(
+                status_code=503, detail="wnd_ia0_delivery_unavailable"
+            ) from None
+        commerce_state = "ia0_session_accepted"
 
     # Twilio TwiML response: disabled by default, TEST-only, only for an
     # authenticated first greeting whose durable receipt has been finalized.

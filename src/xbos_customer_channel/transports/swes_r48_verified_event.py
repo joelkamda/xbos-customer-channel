@@ -105,7 +105,7 @@ def build_verified_wnd_event(
     *, settings: SandboxIngressConfig, verified: VerifiedSandboxIngress,
     raw_body: bytes, signature: str, content_type: str,
     received_at: datetime, receipt: ProcessedTwilioReceipt,
-    sender_key_ring: LocatorKeyRing,
+    sender_key_ring: LocatorKeyRing, allow_processed_duplicate: bool = False,
 ) -> WNDVerifiedInboundEvent:
     """Re-verify the original provider-signed form, require true PG17 readback.
 
@@ -115,7 +115,9 @@ def build_verified_wnd_event(
     """
     if (
         not isinstance(verified, VerifiedSandboxIngress)
-        or verified.disposition != "accepted"
+        or verified.disposition not in (
+            ("accepted", "duplicate") if allow_processed_duplicate else ("accepted",)
+        )
         or verified.merchant_dispatch_enabled
         or not isinstance(receipt, ProcessedTwilioReceipt)
         or not isinstance(sender_key_ring, LocatorKeyRing)
@@ -177,6 +179,11 @@ def build_verified_wnd_event(
         or len(sender.key_version) > 48
     ):
         raise VerifiedEventNotAdmitted("keyed_sender_reference_invalid")
+    if allow_processed_duplicate and (
+        not isinstance(receipt.sender_lookup_hash, str)
+        or not hmac.compare_digest(receipt.sender_lookup_hash, sender.digest)
+    ):
+        raise VerifiedEventNotAdmitted("durable_sender_binding_required")
     correlation = str(uuid5(CORRELATION_NAMESPACE, "cc-r48-ia0:" + key))
     event_id = hashlib.sha256(("cc-r48-v1:" + key).encode("ascii")).hexdigest()
     received = received_at.astimezone(UTC)
