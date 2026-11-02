@@ -38,12 +38,16 @@ from .durable_w1 import (
     DurableW1SessionRuntime,
     compose_durable_w1_session_runtime,
 )
+from .swes_r48_attestation import router as swes_r48_receipt_router
 
 
 app = FastAPI(
     title="XafPay Customer Channel",
     version="xc9-h1r1",
 )
+# This read-only route stays default-off without independent WND credential
+# custody, restricted CC PG17 receipt role, and sandbox admission.
+app.include_router(swes_r48_receipt_router)
 
 # Legacy/isolated ingress proof: not a durable merchant receipt.
 _twilio_ingress_receipts = LocalNoCommerceReplayLedger()
