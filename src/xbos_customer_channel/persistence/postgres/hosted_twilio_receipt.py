@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hmac
 import re
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from psycopg.rows import dict_row
@@ -18,6 +19,16 @@ from .database import ConnectionFactory, PostgresUnavailable, transaction
 STAGING_DATABASE = "xafpay_customer_channel_staging_db"
 PROVIDER = "twilio_whatsapp"
 ENDPOINT = "hosted_sandbox_test_only"
+
+
+@dataclass(frozen=True, slots=True)
+class ProcessedTwilioReceipt:
+    provider_message_ref_hash: str
+    payload_digest: str
+    processing_state: str
+    processing_attempt: int
+    row_version: int
+    occurred_at_utc: datetime
 
 
 class HostedTwilioReceiptLedger:
@@ -162,3 +173,51 @@ class HostedTwilioReceiptLedger:
                 )
                 if cursor.fetchone() is None:
                     raise PostgresUnavailable("durable_receipt_transition_conflict")
+
+    def read_processed_first(
+        self, *, key: str, payload_digest: str
+    ) -> ProcessedTwilioReceipt | None:
+        """Independently verify real PG17 first-processed receipt after commit.
+
+        Never accepts a caller-provided status flag; enforced by restricted
+        Postgres role and exact hashed message/form identity.
+        """
+        if not self._valid_key(key) or not self._valid_key(payload_digest):
+            raise PostgresUnavailable("invalid_receipt_readback_identity")
+        with transaction(self._factory) as connection:
+            with connection.cursor(row_factory=dict_row) as cursor:
+                self._assert_staging(cursor)
+                cursor.execute(
+                    """
+                    SELECT provider_message_ref,payload_digest,processing_state,
+                           processing_attempt,row_version,occurred_at_utc
+                    FROM provider_message_receipt
+                    WHERE provider_code=%s AND provider_endpoint_ref=%s
+                      AND provider_message_ref=%s AND event_kind='message'
+                    """,
+                    (PROVIDER, ENDPOINT, key),
+                )
+                row = cursor.fetchone()
+        if row is None:
+            return None
+        if (
+            row["processing_state"] != "processed"
+            or row["processing_attempt"] != 1
+            or type(row["row_version"]) is not int
+            or row["row_version"] < 2
+            or not isinstance(row["payload_digest"], str)
+            or not hmac.compare_digest(row["payload_digest"], payload_digest)
+            or not isinstance(row["provider_message_ref"], str)
+            or not hmac.compare_digest(row["provider_message_ref"], key)
+            or not isinstance(row["occurred_at_utc"], datetime)
+            or row["occurred_at_utc"].tzinfo is None
+        ):
+            return None
+        return ProcessedTwilioReceipt(
+            provider_message_ref_hash=key,
+            payload_digest=payload_digest,
+            processing_state="processed",
+            processing_attempt=1,
+            row_version=row["row_version"],
+            occurred_at_utc=row["occurred_at_utc"],
+        )
