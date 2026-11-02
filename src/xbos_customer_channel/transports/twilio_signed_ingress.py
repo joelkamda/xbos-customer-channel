@@ -12,14 +12,14 @@ import os
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from threading import Lock
 from urllib.parse import parse_qsl, urlsplit
 
 from .twilio_whatsapp import (
+    TwilioWebhookRejected,
     TwilioWhatsAppConfig,
     TwilioWhatsAppInboundAdapter,
-    TwilioWebhookRejected,
     canonical_twilio_form_digest,
 )
 
@@ -52,7 +52,7 @@ class SandboxIngressConfig:
     @classmethod
     def from_environment(
         cls, environ: Mapping[str, str] | None = None
-    ) -> "SandboxIngressConfig":
+    ) -> SandboxIngressConfig:
         env = os.environ if environ is None else environ
         # Do not inspect credentials until the explicit feature gate passes.
         if env.get(FLAG) != "1" or env.get(NO_MONEY) != "1":
@@ -78,7 +78,7 @@ class SandboxIngressConfig:
             raise IngressNotConfigured("enrolled_sandbox_tester_unverified")
         expiry = env.get(EXPIRES, "")
         try:
-            when = datetime.fromisoformat(expiry.replace("Z", "+00:00"))
+            when = datetime.fromisoformat(expiry)
         except (TypeError, ValueError) as exc:
             raise IngressNotConfigured("sandbox_join_expiry_unverified") from exc
         if when.tzinfo is None or when.utcoffset() is None:
@@ -86,7 +86,7 @@ class SandboxIngressConfig:
         return cls(
             provider=provider,
             allowed_tester=tester,
-            tester_expires_utc=when.astimezone(timezone.utc),
+            tester_expires_utc=when.astimezone(UTC),
             expected_host=url.hostname,
         )
 
@@ -150,6 +150,7 @@ class VerifiedSandboxIngress:
     action: str
     merchant_dispatch_enabled: bool = False
     receipt_key: str | None = None  # internal hash, never public response
+    form_payload_digest: str | None = None  # original signed-form SHA256, private
 
 
 def _r5_test_action(body: str) -> str:
@@ -180,7 +181,7 @@ def verify_sandbox_inbound(
         raise IngressRejected("wrong_public_host_or_scheme")
     if now.tzinfo is None or now.utcoffset() is None:
         raise IngressRejected("clock_must_be_utc_aware")
-    if now.astimezone(timezone.utc) >= settings.tester_expires_utc:
+    if now.astimezone(UTC) >= settings.tester_expires_utc:
         raise IngressNotConfigured("tester_join_expired")
     form = parse_bounded_form(raw_body, content_type)
     try:
@@ -211,8 +212,9 @@ def verify_sandbox_inbound(
          + message.recipient + "\x00"
          + settings.provider.account_sid).encode("utf-8")
     ).hexdigest()
+    signed_form_digest = canonical_twilio_form_digest(form)
     outcome = ledger.check_and_claim(
-        key=key, digest=canonical_twilio_form_digest(form),
+        key=key, digest=signed_form_digest,
         now_epoch=int(now.timestamp()),
     )
     if outcome in ("collision", "unavailable"):
@@ -223,4 +225,5 @@ def verify_sandbox_inbound(
         action=_r5_test_action(message.body),
         merchant_dispatch_enabled=False,
         receipt_key=key,
+        form_payload_digest=signed_form_digest,
     )

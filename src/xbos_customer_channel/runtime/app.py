@@ -19,6 +19,11 @@ from ..persistence.postgres.database import (
     psycopg_connection_factory,
 )
 from ..persistence.postgres.hosted_twilio_receipt import HostedTwilioReceiptLedger
+from ..persistence.postgres.serialization import LocatorKeyRing
+from ..transports.swes_r48_signed_sender_binding import (
+    SignedSenderBindingUnavailable,
+    derive_first_signed_sender_hash,
+)
 from ..transports.twilio_signed_ingress import (
     IngressNotConfigured,
     IngressRejected,
@@ -171,18 +176,43 @@ async def receive_signed_sandbox_ingress(request: Request) -> PlainTextResponse:
     if durable and (not claim or verified.disposition not in ("accepted", "duplicate")):
         raise HTTPException(status_code=503, detail="durable_receipt_claim_invalid")
 
+    sender_binding: str | None = None
+
     def finish_durable(success: bool) -> None:
         if durable and verified.disposition == "accepted":
             try:
-                receipt_ledger.finish_claim(
-                    key=claim,
-                    now_epoch=int(datetime.now(timezone.utc).timestamp()),
-                    success=success,
-                )
+                options = {
+                    "key": claim,
+                    "now_epoch": int(datetime.now(timezone.utc).timestamp()),
+                    "success": success,
+                }
+                if success and sender_binding is not None:
+                    options["sender_lookup_hash"] = sender_binding
+                receipt_ledger.finish_claim(**options)
             except PostgresUnavailable:
                 raise HTTPException(
                     status_code=503, detail="sandbox_receipt_finalization_unavailable"
                 ) from None
+
+    if (
+        durable
+        and verified.disposition == "accepted"
+        and os.environ.get("CC_R48_SENDER_BINDING_ENABLED") == "1"
+    ):
+        try:
+            sender_binding = derive_first_signed_sender_hash(
+                settings=settings, verified=verified,
+                raw_body=await request.body(),
+                signature=request.headers.get("X-Twilio-Signature"),
+                content_type=request.headers.get("Content-Type"),
+                received_at=datetime.now(timezone.utc),
+                key_ring=LocatorKeyRing.from_environment(),
+            )
+        except (SignedSenderBindingUnavailable, ValueError):
+            finish_durable(False)
+            raise HTTPException(
+                status_code=503, detail="sandbox_signed_sender_binding_unavailable"
+            ) from None
 
     commerce_state = "receipt_only"
     if verified.disposition == "duplicate":

@@ -29,6 +29,7 @@ class ProcessedTwilioReceipt:
     processing_attempt: int
     row_version: int
     occurred_at_utc: datetime
+    sender_lookup_hash: str | None = None
 
 
 class HostedTwilioReceiptLedger:
@@ -151,9 +152,14 @@ class HostedTwilioReceiptLedger:
                         return "accepted"
                 return "duplicate"
 
-    def finish_claim(self, *, key: str, now_epoch: int, success: bool) -> None:
+    def finish_claim(self, *, key: str, now_epoch: int, success: bool,
+                     sender_lookup_hash: str | None = None) -> None:
         if not self._valid_key(key) or type(now_epoch) is not int:
             raise PostgresUnavailable("invalid_durable_claim_identity")
+        if sender_lookup_hash is not None and (
+            not success or not self._valid_key(sender_lookup_hash)
+        ):
+            raise PostgresUnavailable("invalid_signed_sender_binding")
         now = datetime.fromtimestamp(now_epoch, tz=timezone.utc)
         new_state = "processed" if success else "failed_retryable"
         with transaction(self._factory) as connection:
@@ -162,14 +168,18 @@ class HostedTwilioReceiptLedger:
                 cursor.execute(
                     """
                     UPDATE provider_message_receipt
-                    SET processing_state=%s, updated_at_utc=%s,
-                        row_version=row_version+1
+                    SET processing_state=%s,
+                        sender_lookup_hash=COALESCE(sender_lookup_hash, %s),
+                        updated_at_utc=%s, row_version=row_version+1
                     WHERE provider_code=%s AND provider_endpoint_ref=%s
                       AND provider_message_ref=%s AND event_kind='message'
                       AND processing_state='processing'
+                      AND (sender_lookup_hash IS NULL OR
+                           sender_lookup_hash IS NOT DISTINCT FROM %s)
                     RETURNING provider_message_receipt_ref
                     """,
-                    (new_state, now, PROVIDER, ENDPOINT, key),
+                    (new_state, sender_lookup_hash, now,
+                     PROVIDER, ENDPOINT, key, sender_lookup_hash),
                 )
                 if cursor.fetchone() is None:
                     raise PostgresUnavailable("durable_receipt_transition_conflict")
@@ -190,7 +200,7 @@ class HostedTwilioReceiptLedger:
                 cursor.execute(
                     """
                     SELECT provider_message_ref,payload_digest,processing_state,
-                           processing_attempt,row_version,occurred_at_utc
+                           processing_attempt,row_version,occurred_at_utc,sender_lookup_hash
                     FROM provider_message_receipt
                     WHERE provider_code=%s AND provider_endpoint_ref=%s
                       AND provider_message_ref=%s AND event_kind='message'
@@ -220,4 +230,5 @@ class HostedTwilioReceiptLedger:
             processing_attempt=1,
             row_version=row["row_version"],
             occurred_at_utc=row["occurred_at_utc"],
+            sender_lookup_hash=row.get("sender_lookup_hash"),
         )

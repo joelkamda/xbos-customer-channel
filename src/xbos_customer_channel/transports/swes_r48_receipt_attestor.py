@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 from uuid import uuid5
 
 from ..persistence.postgres.hosted_twilio_receipt import HostedTwilioReceiptLedger
+from ..persistence.postgres.serialization import LocatorKeyRing
 from .swes_r48_verified_event import (
     CORRELATION_NAMESPACE,
     MERCHANT,
@@ -141,6 +142,30 @@ def attest_cc_processed_receipt(
         or abs((processed.occurred_at_utc - timestamp).total_seconds()) > 120
     ):
         raise ReceiptAttestationDenied("restricted_hosted_processed_receipt_not_found")
+    sender = payload.get("sender_reference")
+    sender_attested = False
+    if (
+        isinstance(sender, dict)
+        and sender.get("scheme") == "cc_locator_hmac_sha256_v1"
+        and isinstance(sender.get("version"), str)
+        and isinstance(sender.get("value"), str)
+        and _HEX64.fullmatch(sender["value"])
+        and isinstance(processed.sender_lookup_hash, str)
+        and _HEX64.fullmatch(processed.sender_lookup_hash)
+    ):
+        try:
+            key_ring = LocatorKeyRing.from_environment()
+            allowed_versions = {
+                key_ring.current_version, key_ring.previous_version
+            }
+            sender_attested = (
+                sender["version"] in allowed_versions
+                and hmac.compare_digest(
+                    sender["value"], processed.sender_lookup_hash
+                )
+            )
+        except ValueError:
+            sender_attested = False
     return {
         "schema": "xafpay.cc.restricted_receipt_attestation.v1",
         "status": "processed_receipt_verified",
@@ -150,8 +175,8 @@ def attest_cc_processed_receipt(
         "payload_sha256": processed.payload_digest,
         "first_processed_attempt": 1,
         "server_received_at_utc": timestamp.astimezone(UTC).isoformat(),
-        # It is impossible to verify sender HMAC from the present receipt row:
-        # sender_lookup_hash is currently NULL in hosted ingress inserts.
-        "sender_provenance_attested": False,
+        # Only the same signed-ingress transaction may set the persisted hash.
+        # Legacy NULL receipts never qualify, including historical WhatsApp tests.
+        "sender_provenance_attested": sender_attested,
         "customer_authenticated_external": False,
     }
