@@ -24,7 +24,7 @@ from .swes_r48_verified_event import (
 
 _URL = (
     "https://wnd-xafpay-demo-austin-backend.onrender.com"
-    "/internal/swes/track-a/test-only/ia0-events"
+    "/internal/swes/track-a-sandbox/first-ia0"
 )
 
 

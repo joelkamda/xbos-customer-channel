@@ -37,7 +37,7 @@ from xbos_customer_channel.transports.swes_r48_wnd_delivery import (
 
 BEARER="private-service-credential-test-only-abcdefghijklmnopqrstuvwxyz"
 URL=("https://wnd-xafpay-demo-austin-backend.onrender.com"
-     "/internal/swes/track-a/test-only/ia0-events")
+     "/internal/swes/track-a-sandbox/first-ia0")
 
 
 def test_default_off_and_unqualified_bearer_rejected():
