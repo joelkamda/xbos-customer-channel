@@ -240,3 +240,33 @@ def test_real_verified_order_webhook_runs_ia0_then_order_and_not_legacy_bridge()
     assert duplicate.headers["X-XafPay-R5-Commerce"] == "order_reconciled"
     assert [kind for kind, _ in calls] == ["ia0", "order", "ia0", "order"]
     assert len({item for _, item in calls}) == 1
+
+
+def test_r48_order_gate_off_never_falls_back_to_legacy_bridge():
+    form = FORM | {"Body": "order wnd test"}
+    env = scenario_env()
+    env.update(config(CC_R48_WND_ORDER_DELIVERY_ENABLED="0"))
+    ledger = PersistentFixtureLedger()
+    class FixedClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return NOW.astimezone(tz or UTC)
+    client = TestClient(app, base_url="https://" + HOST)
+    with (
+        patch.dict("os.environ", env, clear=True),
+        patch("xbos_customer_channel.runtime.app._sandbox_receipt_ledger",
+              return_value=ledger),
+        patch("xbos_customer_channel.runtime.app.datetime", FixedClock),
+        patch("xbos_customer_channel.runtime.app.send_verified_cc_event",
+              side_effect=AssertionError("must not deliver IA0 on disabled order")),
+        patch("xbos_customer_channel.runtime.app.dispatch_p0d_r5_test_order",
+              side_effect=AssertionError("must not invoke legacy P0D")),
+    ):
+        response = client.post(
+            "/webhooks/twilio/whatsapp", data=form,
+            headers={"X-Twilio-Signature": sign(form),
+                     "X-Forwarded-Proto": "https"},
+        )
+    assert response.status_code == 503
+    assert response.json()["detail"] == "wnd_canonical_order_not_admitted"
+    assert all(row["state"] != "processed" for row in ledger.records.values())

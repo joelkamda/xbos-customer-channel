@@ -241,6 +241,14 @@ async def receive_signed_sandbox_ingress(request: Request) -> PlainTextResponse:
     if verified.disposition == "duplicate":
         commerce_state = "duplicate_no_dispatch"
     elif verified.action == "test_order" and not order_handoff_enabled:
+        # With the R48 authenticated IA0 channel active, an explicit signed
+        # Track A order must NEVER fall back to the historical R5 bridge.
+        # Preserve that older independent bridge only when R48 is fully OFF.
+        if os.environ.get("CC_R48_WND_IA0_DELIVERY_ENABLED") == "1":
+            finish_durable(False)
+            raise HTTPException(
+                status_code=503, detail="wnd_canonical_order_not_admitted"
+            )
         try:
             dispatch_p0d_r5_test_order(event_digest=verified.event_digest)
         except P0DR5BridgeNotConfigured:
