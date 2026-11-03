@@ -59,7 +59,7 @@ def fixture():
 
 def test_authenticated_https_exact_202_ia0_ack_and_no_redirect():
     event,receipt=fixture()
-    real_ids=[str(uuid4()),str(uuid4()),str(uuid4())]
+    real_ids=[str(uuid4()),str(uuid4()),str(uuid4()),str(uuid4())]
     def exchange(req):
         assert str(req.url)==URL
         assert req.headers["Authorization"] == "Bearer " + BEARER
@@ -76,6 +76,7 @@ def test_authenticated_https_exact_202_ia0_ack_and_no_redirect():
             "ia0_conversation_public_id":real_ids[0],
             "ia0_participant_public_id":real_ids[1],
             "ia0_session_public_id":real_ids[2],
+            "context_binding_ref":real_ids[3],
         })
     with httpx.Client(transport=httpx.MockTransport(exchange)) as client:
         ack=send_verified_cc_event(
@@ -84,6 +85,7 @@ def test_authenticated_https_exact_202_ia0_ack_and_no_redirect():
             http_client=client,
         )
     assert str(ack.session_public_id)==real_ids[2]
+    assert str(ack.context_binding_ref)==real_ids[3]
 
 
 @pytest.mark.parametrize("modification", [

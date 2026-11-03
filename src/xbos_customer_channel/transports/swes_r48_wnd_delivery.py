@@ -57,6 +57,7 @@ class WNDSessionAcknowledgment:
     conversation_public_id: UUID
     participant_public_id: UUID
     session_public_id: UUID
+    context_binding_ref: UUID
 
 
 def send_verified_cc_event(
@@ -123,6 +124,7 @@ def send_verified_cc_event(
                     "ia0_conversation_public_id",
                     "ia0_participant_public_id",
                     "ia0_session_public_id",
+                    "context_binding_ref",
                 )
             ]
             if any(identifier.int == 0 for identifier in identifiers):
@@ -135,6 +137,7 @@ def send_verified_cc_event(
             conversation_public_id=identifiers[0],
             participant_public_id=identifiers[1],
             session_public_id=identifiers[2],
+            context_binding_ref=identifiers[3],
         )
     finally:
         if local_client:

@@ -41,6 +41,11 @@ from ..transports.swes_r48_wnd_delivery import (
     WNDEventDeliveryConfig,
     send_verified_cc_event,
 )
+from ..transports.swes_r48_wnd_order_delivery import (
+    WNDOrderDeliveryConfig,
+    WNDOrderDeliveryUnavailable,
+    send_verified_cc_order,
+)
 from ..transports.twilio_signed_ingress import (
     IngressNotConfigured,
     IngressRejected,
@@ -228,10 +233,14 @@ async def receive_signed_sandbox_ingress(request: Request) -> PlainTextResponse:
                 status_code=503, detail="sandbox_signed_sender_binding_unavailable"
             ) from None
 
+    order_handoff_enabled = (
+        verified.action == "test_order"
+        and os.environ.get("CC_R48_WND_ORDER_DELIVERY_ENABLED") == "1"
+    )
     commerce_state = "receipt_only"
     if verified.disposition == "duplicate":
         commerce_state = "duplicate_no_dispatch"
-    elif verified.action == "test_order":
+    elif verified.action == "test_order" and not order_handoff_enabled:
         try:
             dispatch_p0d_r5_test_order(event_digest=verified.event_digest)
         except P0DR5BridgeNotConfigured:
@@ -248,13 +257,18 @@ async def receive_signed_sandbox_ingress(request: Request) -> PlainTextResponse:
             finish_durable(False)
             raise
         commerce_state = "order_submitted"
+    if order_handoff_enabled and os.environ.get("CC_R48_WND_IA0_DELIVERY_ENABLED") != "1":
+        finish_durable(False)
+        raise HTTPException(
+            status_code=503, detail="wnd_canonical_order_delivery_unavailable"
+        )
     finish_durable(True)
 
     # Gated TEST-only IA0 event handoff: no customer order or payment.
     # Genuine signed duplicates can retry an uncertain HTTPS outcome only
     # against the SAME first processed sender-bound receipt, before expiry.
     if os.environ.get("CC_R48_WND_IA0_DELIVERY_ENABLED") == "1":
-        if not durable or verified.action == "test_order":
+        if not durable or (verified.action == "test_order" and not order_handoff_enabled):
             raise HTTPException(status_code=503, detail="wnd_ia0_delivery_unavailable")
         try:
             receipt = receipt_ledger.read_processed_first(
@@ -272,20 +286,30 @@ async def receive_signed_sandbox_ingress(request: Request) -> PlainTextResponse:
                 sender_key_ring=LocatorKeyRing.from_environment(),
                 allow_processed_duplicate=True,
             )
-            await asyncio.to_thread(
+            ia0_ack = await asyncio.to_thread(
                 send_verified_cc_event,
                 event=real_event, receipt=receipt,
                 config=WNDEventDeliveryConfig.from_environment(),
                 now=datetime.now(UTC),
             )
+            if order_handoff_enabled:
+                await asyncio.to_thread(
+                    send_verified_cc_order,
+                    verified=verified, event=real_event, receipt=receipt,
+                    ia0=ia0_ack, config=WNDOrderDeliveryConfig.from_environment(),
+                    now=datetime.now(UTC),
+                )
         except (PostgresUnavailable, WNDDeliveryUnavailable,
-                VerifiedEventNotAdmitted, ValueError):
+                WNDOrderDeliveryUnavailable, VerifiedEventNotAdmitted, ValueError):
             # HTTP 503 permits a *real provider-signed* redelivery to retry,
             # preserving the first-row identity and the original 5-min TTL.
             raise HTTPException(
                 status_code=503, detail="wnd_ia0_delivery_unavailable"
             ) from None
-        commerce_state = "ia0_session_accepted"
+        commerce_state = (
+            "order_reconciled" if verified.disposition == "duplicate"
+            else "order_submitted"
+        ) if order_handoff_enabled else "ia0_session_accepted"
 
     # Twilio TwiML response: disabled by default, TEST-only, only for an
     # authenticated first greeting whose durable receipt has been finalized.
