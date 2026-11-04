@@ -28,6 +28,10 @@ from ..transports.meta_whatsapp import (
     MissingWebhookSignature,
     ProviderPayloadRejected,
 )
+from ..transports.swes_r48_order_confirmation import (
+    SWESOrderConfirmationUnavailable,
+    send_order_confirmation,
+)
 from ..transports.swes_r48_signed_sender_binding import (
     SignedSenderBindingUnavailable,
     derive_first_signed_sender_hash,
@@ -45,6 +49,13 @@ from ..transports.swes_r48_wnd_order_delivery import (
     WNDOrderDeliveryConfig,
     WNDOrderDeliveryUnavailable,
     send_verified_cc_order,
+)
+from ..transports.swes_twilio_durable_outbound import (
+    SWESOutboundDeliveryUncertain,
+    SWESOutboundFingerprintConflict,
+)
+from ..transports.swes_twilio_sandbox_outbound_gate import (
+    SWESSandboxOutboundNotAdmitted,
 )
 from ..transports.twilio_signed_ingress import (
     IngressNotConfigured,
@@ -272,7 +283,9 @@ async def receive_signed_sandbox_ingress(request: Request) -> PlainTextResponse:
         )
     finish_durable(True)
 
-    # Gated TEST-only IA0 event handoff: no customer order or payment.
+    # Authenticated WND order and its customer notification are distinct results.
+    order_ack = None
+    # Gated TEST-only IA0 event handoff; no payment is initiated here.
     # Genuine signed duplicates can retry an uncertain HTTPS outcome only
     # against the SAME first processed sender-bound receipt, before expiry.
     if os.environ.get("CC_R48_WND_IA0_DELIVERY_ENABLED") == "1":
@@ -301,7 +314,7 @@ async def receive_signed_sandbox_ingress(request: Request) -> PlainTextResponse:
                 now=datetime.now(UTC),
             )
             if order_handoff_enabled:
-                await asyncio.to_thread(
+                order_ack = await asyncio.to_thread(
                     send_verified_cc_order,
                     verified=verified, event=real_event, receipt=receipt,
                     ia0=ia0_ack, config=WNDOrderDeliveryConfig.from_environment(),
@@ -318,6 +331,29 @@ async def receive_signed_sandbox_ingress(request: Request) -> PlainTextResponse:
             "order_reconciled" if verified.disposition == "duplicate"
             else "order_submitted"
         ) if order_handoff_enabled else "ia0_session_accepted"
+
+    # Optional independently gated TEST-only notification. The provider REST
+    # sender durably reserves before sending; an uncertain outcome is never
+    # retried through webhook replay. Order remains authoritative if reply fails.
+    if (
+        order_ack is not None
+        and verified.disposition == "accepted"
+        and os.environ.get("CC_R48_WND_ORDER_CONFIRMATION_ENABLED") == "1"
+    ):
+        try:
+            await asyncio.to_thread(
+                send_order_confirmation,
+                ack=order_ack, verified=verified, settings=settings,
+                now=datetime.now(UTC),
+            )
+        except (
+            SWESOrderConfirmationUnavailable, SWESOutboundDeliveryUncertain,
+            SWESOutboundFingerprintConflict, SWESSandboxOutboundNotAdmitted,
+            PostgresUnavailable, ValueError,
+        ):
+            # Do NOT re-run WND commerce or fabricate a successful delivery.
+            # Provider outcome may be unknown and needs separate reconciliation.
+            commerce_state = "order_submitted_notification_unconfirmed"
 
     # Twilio TwiML response: disabled by default, TEST-only, only for an
     # authenticated first greeting whose durable receipt has been finalized.
